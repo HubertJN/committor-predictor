@@ -126,6 +126,7 @@ plt.close()
 
 # --- CNN Predictions on validation set ---
 y_valid = np.array([valid_ds[i][1].item() for i in range(len(valid_ds))])
+y_valid_err = attrs[:,3][valid_idx]
 x_valid = torch.stack([valid_ds[i][0] for i in range(len(valid_ds))]).to(device)
 
 with torch.no_grad():
@@ -134,7 +135,7 @@ with torch.no_grad():
 rmse = np.sqrt(np.mean((predictions - y_valid) ** 2))
 
 plt.figure(figsize=(6,6))
-plt.scatter(y_valid, predictions, s=5, alpha=0.5)
+plt.errorbar(y_valid, predictions, xerr=y_valid_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray')
 plt.plot([0,1],[0,1], color='red', linewidth=2)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
@@ -152,7 +153,7 @@ predictions = sigmoid(attrs[valid_idx][:,1], *popt)
 rmse = np.sqrt(np.mean((predictions - y_valid) ** 2))
 
 plt.figure(figsize=(6,6))
-plt.scatter(y_valid, predictions, s=5, alpha=0.5)
+plt.errorbar(y_valid, predictions, xerr=y_valid_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray')
 plt.plot([0,1],[0,1], color='red', linewidth=2)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
