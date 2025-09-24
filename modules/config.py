@@ -12,7 +12,7 @@ class Dict2Obj:
     #def __getattr__(self, name):
     #    return getattr(self, name)
 
-    def load_config(path="config.yaml"):
-        with open(path, "r") as f:
-            cfg_dict = yaml.safe_load(f)
-        return Dict2Obj(cfg_dict)
+def load_config(path="config.yaml"):
+    with open(path, "r") as f:
+        cfg_dict = yaml.safe_load(f)
+    return Dict2Obj(cfg_dict)
