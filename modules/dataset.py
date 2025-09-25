@@ -6,6 +6,7 @@ from torch_geometric.data import Data
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader as TorchDataLoader
 from torch_geometric.loader import DataLoader as PyGDataLoader
+import time
 
 # ----------------- Raw HDF5 loading -----------------
 def load_hdf5_raw(h5path):
@@ -152,7 +153,7 @@ def uniform_filter(data, labels, num_bins=10, seed=42):
     bins = np.linspace(0, 1, num_bins + 1)
     num_to_sample = len(data)
     subset_indices = []
-    num_to_sample = 100
+    num_to_sample = 20
 
     for i in range(num_bins):
         bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
