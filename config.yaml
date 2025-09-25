@@ -1,16 +1,16 @@
 paths:
-    data: "training_gridstates.hdf5"
+    data: "../data/gridstates_training.hdf5"
     save_dir: "models"
     plot_dir: "figures"
 
 dataset:
     test_size: 0.2
-    batch_size: 256
+    batch_size: 128
     augment: true
     uniform_bins: 10
 
 training:
-    epochs: 128
+    epochs: 32
     lr: 0.001
     weight_decay: 0.0001
     loss: "SmoothL1Loss"
