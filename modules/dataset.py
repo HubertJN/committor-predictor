@@ -10,42 +10,44 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 # ----------------- Raw HDF5 loading -----------------
 def load_hdf5_raw(h5path):
     """
-    Load grids and attributes from HDF5 file as NumPy arrays.
+    Load all grids and attributes from HDF5 file (compressed format).
+    Args:
+        h5path (str): path to HDF5 file
     Returns:
-        grids: np.ndarray, shape (N, L, L)
-        attrs: np.ndarray, shape (N, 4)
+        grids (np.ndarray): shape (N, L, L)
+        attrs (np.ndarray): shape (N, M)
+        headers (dict): header values
     """
-    def read_attr(ds, name):
-        val = ds.attrs.get(name)
-        if isinstance(val, bytes):
-            val = val.decode('utf-8')
-        if val == 'null':
-            return np.nan
-        return float(val)
+    start = time.perf_counter()
+    with h5py.File(h5path, "r") as f:
+        total_saved = int(f['total_saved_grids'][()]) if 'total_saved_grids' in f else 0
+        L = int(f['L'][()]) if 'L' in f else 0
+        nbits = L * L
+        nbytes = (nbits + 7) // 8
 
-    print(f"Opening HDF5 file: {h5path}")
-    with h5py.File(h5path, 'r') as f:
-        total_saved = int(f['total_saved_grids'][()])
-        L = int(f['L'][()])
-        grids = np.empty((total_saved, L, L), dtype=np.int8)
-        attrs = np.empty((total_saved, 4), dtype=np.float64)
+        # Decode packed grids
+        if 'grids' in f:
+            raw_grids = f['grids'][()]
+            grids = np.empty((total_saved, L, L), dtype=np.int8)
+            for i in range(total_saved):
+                arr = np.frombuffer(raw_grids[i], dtype=np.uint8)
+                bits = np.unpackbits(arr, bitorder='little')[:nbits]
+                grids[i] = (bits.astype(np.int8) * 2 - 1).reshape(L, L)
+        else:
+            grids = np.empty((0, L, L), dtype=np.int8)
 
-        idx = 0
-        for grid_name in sorted(k for k in f.keys() if k.startswith('grid_')):
-            grp = f[grid_name]
-            if idx >= total_saved:
-                break
+        # Extract headers
+        header_keys = [key for key in f.keys() if key not in ('grids', 'attrs')]
+        headers = {key: f[key][()] for key in header_keys}
 
-            grids[idx] = grp[()]
-            attrs[idx, 0] = read_attr(grp, 'magnetisation')
-            attrs[idx, 1] = read_attr(grp, 'lclus_size')
-            attrs[idx, 2] = read_attr(grp, 'committor')
-            attrs[idx, 3] = read_attr(grp, 'committor_error')
+        # Attributes
+        attrs = f['attrs'][()] if 'attrs' in f else np.empty((total_saved, 0))
 
-            idx += 1
+    end = time.perf_counter()
+    print(f"Loaded {len(grids)} grids and attributes into memory.")
+    print(f"Elapsed time: {end - start:.2f} s")
+    return grids, attrs, headers
 
-    print(f"Loaded {idx} grids. grids.shape={grids.shape}, attrs.shape={attrs.shape}")
-    return grids, attrs
 
 # ----------------- CNN Dataset with Rotations + Reflections -----------------
 class IsingDatasetCNN(Dataset):
@@ -150,6 +152,7 @@ def uniform_filter(data, labels, num_bins=10, seed=42):
     bins = np.linspace(0, 1, num_bins + 1)
     num_to_sample = len(data)
     subset_indices = []
+    num_to_sample = 100
 
     for i in range(num_bins):
         bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
@@ -160,6 +163,8 @@ def uniform_filter(data, labels, num_bins=10, seed=42):
         bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
         selected = np.random.choice(bin_idx, size=min(num_to_sample, len(bin_idx)), replace=False)
         subset_indices.extend(selected)
+
+    print("Trimmed samples")
 
     return np.array(subset_indices)
 
@@ -199,12 +204,12 @@ def prepare_subset(h5path, uniform_bins=10, test_size=0.2, seed=42):
         subset_indices: np.ndarray
     """
     print("Loading full dataset...")
-    grids, attrs = load_hdf5_raw(h5path)
+    grids, attrs, _ = load_hdf5_raw(h5path)
 
     np.random.seed(seed)
-    # subset_indices = uniform_filter(grids, attrs[:,2], num_bins=uniform_bins)
-    # grids = grids[subset_indices]
-    # attrs = attrs[subset_indices]
+    subset_indices = uniform_filter(grids, attrs[:,2], num_bins=uniform_bins)
+    grids = grids[subset_indices]
+    attrs = attrs[subset_indices]
 
     # print("Filtering 0 committor data")
     # grids, attrs = filter_zero_committor(grids, attrs)
