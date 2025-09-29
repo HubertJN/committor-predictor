@@ -2,7 +2,7 @@ import sys
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from modules.architecture import CNN, GNN, fit, physics_func
+from modules.architecture import CNN, fit, physics_func
 from modules.dataset import prepare_subset, prepare_datasets
 from modules.config import load_config
 
@@ -28,8 +28,6 @@ if config.model.type == "cnn":
         num_fc_layers=config.model.num_fc_layers,
         dropout=config.model.dropout
     ).to(device)
-else:
-    model = GNN().to(device)
 
 decay, no_decay = [], []
 for name, param in model.named_parameters():
