@@ -36,6 +36,8 @@ for ch in channels_list:
         for nf in fc_layers_list:
             combos.append((ch, nc, nf))
 
+print(len(combos))
+
 # pick exactly one combo based on SLURM_ARRAY_TASK_ID
 task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", "0"))
 if task_id < 0 or task_id >= len(combos):
@@ -43,7 +45,7 @@ if task_id < 0 or task_id >= len(combos):
 
 channels, num_cnn_layers, num_fc_layers = combos[task_id]
 
-print(f"[task {i}] Running config index {i}: channels={channels}, cnn_layers={num_cnn_layers}, fc_layers={num_fc_layers}")
+print(f"[task {task_id}] Running config index {task_id}: channels={channels}, cnn_layers={num_cnn_layers}, fc_layers={num_fc_layers}")
 
 # loss
 if config.training.loss.lower() == "smoothl1loss":
@@ -64,11 +66,11 @@ model = CNN(
 
 # optimizer param groups
 decay, no_decay = [], []
-    or name, param in model.named_parameters():
-       if "bn" in name or "bias" in name:
-           no_decay.append(param)
-       else:
-           decay.append(param)
+for name, param in model.named_parameters():
+    if "bn" in name or "bias" in name:
+        no_decay.append(param)
+    else:
+        decay.append(param)
 
 optimizer = torch.optim.AdamW([
     {'params': decay, 'weight_decay': config.training.weight_decay},
