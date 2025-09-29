@@ -105,7 +105,7 @@ class CNN(nn.Module):
         self.cnn_layers = nn.ModuleList()
         for i in range(num_cnn_layers):
             in_ch = 1 if i == 0 else channels
-            dilation = 1 if i == 0 else (2 ** i)
+            dilation = 1 if i == 0 else (i + 1)
             self.cnn_layers.append(
                 ResidualCNN(in_ch, channels, dilation=dilation, dropout=dropout)
             )
