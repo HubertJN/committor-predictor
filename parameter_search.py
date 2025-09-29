@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 import torch
 import numpy as np
@@ -77,11 +78,13 @@ optimizer = torch.optim.AdamW([
     {'params': no_decay, 'weight_decay': 0.0}
 ], lr=config.training.lr)
 
-# train
+# --- Training ---
 print(f"Starting training for CNN (ch={channels}, nc={num_cnn_layers}, nf={num_fc_layers})...")
+start_time = time.time()  # start timer
 fit(config.training.epochs, model, loss_func, physics_func, optimizer,
     train_dl, valid_dl, device)
-print("Training complete.")
+elapsed_time = time.time() - start_time  # elapsed seconds
+print(f"Training complete in {elapsed_time:.2f} seconds.")
 
 model.eval()
 
@@ -102,6 +105,7 @@ print("============================================")
 print(f"Accuracy for validation set : {accuracy:.2f} %")
 print("Number of parameters :", param_count)
 print("RMSE: ", rmse)
+print(f"Training time (s): {elapsed_time:.2f}")
 print("============================================")
 
 # --- Append a single CSV line atomically to a shared file ---
@@ -109,8 +113,8 @@ out_dir = config.paths.save_dir
 os.makedirs(out_dir, exist_ok=True)
 csv_path = os.path.join(out_dir, "parameter_search.csv")
 
-header = "channels,cnn_layers,fc_layers,param_count,rmse\n"
-line = f"{channels},{num_cnn_layers},{num_fc_layers},{param_count},{rmse:.6g}\n"
+header = "channels,cnn_layers,fc_layers,param_count,rmse,train_time_s\n"  # added train_time_s
+line = f"{channels},{num_cnn_layers},{num_fc_layers},{param_count},{rmse:.6g},{elapsed_time:.2f}\n"
 bline = line.encode("utf-8")
 bheader_and_line = (header + line).encode("utf-8")
 
@@ -123,7 +127,6 @@ if not os.path.exists(csv_path):
         finally:
             os.close(fd)
     except FileExistsError:
-        # Someone else created it in the meantime — just append our line
         fd = os.open(csv_path, os.O_WRONLY | os.O_APPEND)
         try:
             os.write(fd, bline)
