@@ -26,7 +26,7 @@ if config.model.type.lower() != "cnn":
     raise RuntimeError("This hyperparameter script only supports config.model.type == 'cnn'")
 
 # hyperparameter grid
-channels_list = [1 << i for i in range(0, 7)]    # 1,2,4,8,16,32,64
+channels_list = [1 << i for i in range(3, 7)]    # 1,2,4,8,16,32,64
 cnn_layers_list = list(range(1, 9))              # 1..8
 fc_layers_list = list(range(1, 9))               # 1..8
 
@@ -36,7 +36,7 @@ for ch in channels_list:
         for nf in fc_layers_list:
             combos.append((ch, nc, nf))
 
-print(len(combos))
+#print(len(combos))
 
 # pick exactly one combo based on SLURM_ARRAY_TASK_ID
 task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", "0"))
