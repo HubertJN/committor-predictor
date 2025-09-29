@@ -153,7 +153,7 @@ def uniform_filter(data, labels, num_bins=10, seed=42):
     bins = np.linspace(0, 1, num_bins + 1)
     num_to_sample = len(data)
     subset_indices = []
-    num_to_sample = 20
+    num_to_sample = 100
 
     for i in range(num_bins):
         bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
