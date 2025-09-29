@@ -29,14 +29,24 @@ train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
 )
 
 # --- Load trained CNN model ---
+checkpoint = torch.load("models/cnn_ch64_cn3_fc6.pth", map_location=device)
+
+# Extract hyperparameters from checkpoint
+channels = checkpoint['channels']
+num_cnn_layers = checkpoint['num_cnn_layers']
+num_fc_layers = checkpoint['num_fc_layers']
+
+# Recreate the model with the same architecture
 model = CNN(
     input_size=config.model.input_size,
-    channels=config.model.channels,
-    num_cnn_layers=config.model.num_cnn_layers,
-    num_fc_layers=config.model.num_fc_layers,
+    channels=channels,
+    num_cnn_layers=num_cnn_layers,
+    num_fc_layers=num_fc_layers,
     dropout=config.model.dropout
 ).to(device)
-model.load_state_dict(torch.load(f"{config.paths.save_dir}/{config.model.type}.pth", map_location=device))
+
+# Load saved state_dict
+model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 print(f"{config.model.type.upper()} model loaded.")
 
