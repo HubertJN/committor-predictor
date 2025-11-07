@@ -60,11 +60,9 @@ elif config.training.loss.lower() == "mse":
 else:
     raise ValueError(f"Unsupported loss: {config.training.loss}")
 
+save_path = f"{config.paths.save_dir}/{config.model.type}_{beta:.3f}_{h:.3f}.pth"
+
 print(f"Starting training for {config.model.type.upper()}...")
 fit(config.training.epochs, model, loss_func, physics_func, optimizer,
-    train_dl, valid_dl, device)
+    train_dl, valid_dl, device, config, save_path)
 print("Training complete.")
-
-save_path = f"{config.paths.save_dir}/{config.model.type}_{beta:.3f}_{h:.3f}.pth"
-torch.save(model.state_dict(), save_path)
-print(f"Model weights saved to {save_path}")

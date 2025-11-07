@@ -25,13 +25,14 @@ def physics_func(model, xb, one, zero):
     return loss
 
 
-def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device="cpu"):
+def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
     zero = torch.zeros([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
     one = torch.ones([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
 
     width = max(4, len(str(epochs)))  # determine width for epoch numbers
 
     total_start = time.perf_counter()
+    best_val_loss = float('inf')
 
     for epoch in range(epochs):
         epoch_start = time.perf_counter()
@@ -56,6 +57,19 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
             ]
             val_vals, val_counts = zip(*val_losses)
             val_loss = np.sum(np.multiply(val_vals, val_counts)) / np.sum(val_counts)
+
+        # Checkpointing: save best model
+        if save_path and config and val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'channels': config.model.channels,
+                'num_cnn_layers': config.model.num_cnn_layers,
+                'num_fc_layers': config.model.num_fc_layers,
+                'epoch': epoch,
+                'val_loss': val_loss
+            }, save_path)
+            print(f"Checkpoint saved at epoch {epoch+1} with val_loss {val_loss:.5f}")
 
         epoch_time = time.perf_counter() - epoch_start
         print(f"Epoch {epoch+1:{width}}/{epochs:{width}} - "
