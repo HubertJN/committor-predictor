@@ -60,7 +60,7 @@ elif config.training.loss.lower() == "mse":
 else:
     raise ValueError(f"Unsupported loss: {config.training.loss}")
 
-save_path = f"{config.paths.save_dir}/{config.model.type}_{beta:.3f}_{h:.3f}.pth"
+save_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
 
 print(f"Starting training for {config.model.type.upper()}...")
 fit(config.training.epochs, model, loss_func, physics_func, optimizer,
