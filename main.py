@@ -22,7 +22,7 @@ h = args.h if args.h is not None else config.parameters.h
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 grids, attrs, train_idx, valid_idx = prepare_subset(
-    f"data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5",
+    f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5",
     test_size=config.dataset.test_size
 )
 train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
