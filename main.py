@@ -1,4 +1,5 @@
 import sys
+import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -7,10 +8,21 @@ from modules.dataset import prepare_subset, prepare_datasets
 from modules.config import load_config
 
 config = load_config("config.yaml")
+
+# --- parse optional inputs ---
+parser = argparse.ArgumentParser()
+parser.add_argument("--beta", type=float, help="Override beta value")
+parser.add_argument("--h", type=float, help="Override h value")
+args = parser.parse_args()
+
+# --- apply overrides ---
+beta = args.beta if args.beta is not None else config.parameters.beta
+h = args.h if args.h is not None else config.parameters.h
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 grids, attrs, train_idx, valid_idx = prepare_subset(
-    config.paths.data,
+    f"data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5",
     test_size=config.dataset.test_size
 )
 train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
@@ -53,6 +65,6 @@ fit(config.training.epochs, model, loss_func, physics_func, optimizer,
     train_dl, valid_dl, device)
 print("Training complete.")
 
-save_path = f"{config.paths.save_dir}/{config.model.type}.pth"
+save_path = f"{config.paths.save_dir}/{config.model.type}_{beta:.3f}_{h:.3f}.pth"
 torch.save(model.state_dict(), save_path)
 print(f"Model weights saved to {save_path}")
