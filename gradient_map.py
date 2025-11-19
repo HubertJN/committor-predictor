@@ -29,7 +29,7 @@ train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
 )
 
 # --- Load trained CNN model ---
-checkpoint = torch.load("models/cnn_ch64_cn3_fc6.pth", map_location=device)
+checkpoint = torch.load("models/cnn_ch64_cn5_fc3.pth", map_location=device)
 
 # Extract hyperparameters from checkpoint
 channels = checkpoint['channels']
@@ -90,13 +90,12 @@ saliency_overlay[..., 3] = alpha
 # Plot saliency
 fig, ax = plt.subplots(figsize=(6, 6))
 up_coords = np.argwhere(x_rolled > 0)
-ax.scatter(up_coords[:,1], up_coords[:,0], marker='x', color='black', s=10)
+ax.scatter(up_coords[:,1], up_coords[:,0], marker='x', color='black', s=30, linewidth=1)
 ax.imshow(saliency_overlay, interpolation='bicubic')
 ax.set_xticks([])
 ax.set_yticks([])
 ax.set_title("Saliency Overlay", fontsize=12)
-plt.tight_layout()
-plt.savefig(f"{config.paths.plot_dir}/{config.model.type}_saliency.pdf")
+plt.savefig(f"{config.paths.plot_dir}/{config.model.type}_saliency.pdf", bbox_inches="tight")
 print(f"Saved saliency plot to {config.paths.plot_dir}/{config.model.type}_saliency.pdf")
 plt.close()
 
@@ -162,16 +161,36 @@ plt.close()
 predictions = sigmoid(attrs[valid_idx][:,1], *popt)
 rmse = np.sqrt(np.mean((predictions - y_valid) ** 2))
 
+# Compute errors
+errors = np.abs(predictions - y_valid)
+worst_idx = np.argmax(errors)
+
+# Filter for best prediction: target committor between 0.2 and 0.8
+mask = (y_valid >= 0.2) & (y_valid <= 0.8)
+if np.any(mask):
+    best_idx = np.argmin(errors[mask])
+    # Convert mask index to original index
+    best_idx = np.arange(len(y_valid))[mask][best_idx]
+else:
+    best_idx = np.argmin(errors)  # fallback if no points in range
+
 plt.figure(figsize=(6,6))
 plt.errorbar(y_valid, predictions, xerr=y_valid_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray')
 plt.plot([0,1],[0,1], color='red', linewidth=2)
+
+# Highlight best and worst predictions
+plt.scatter(y_valid[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors='orange', linewidths=2, label='Worst', zorder=10)
+plt.scatter(y_valid[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors='green', linewidths=2, label='Best', zorder=10)
+
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
 plt.title("Cluster Prediction on Validation Set")
 plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
          verticalalignment='top', horizontalalignment='left', fontsize=10,
          bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+plt.legend()
 plt.tight_layout()
 plt.savefig(f"{config.paths.plot_dir}/predicted_cluster.pdf")
 print(f"Saved sigmoid prediction plot to {config.paths.plot_dir}/predicted_cluster.pdf")
 plt.close()
+
