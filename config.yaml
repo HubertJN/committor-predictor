@@ -10,7 +10,7 @@ dataset:
     uniform_bins: 10
 
 training:
-    epochs: 16
+    epochs: 128
     lr: 0.001
     weight_decay: 0.0001
     loss: "SmoothL1Loss"
@@ -19,7 +19,11 @@ training:
 model:
     type: "cnn"
     input_size: 64
-    channels: 16
-    num_cnn_layers: 4
-    num_fc_layers: 1
+    channels: 64
+    num_cnn_layers: 5
+    num_fc_layers: 3
     dropout: 0.2
+
+parameters:
+    beta: 0.511
+    h: 0.04
