@@ -152,7 +152,6 @@ def to_gnn_dataset(grids, attrs, device="cpu"):
 def uniform_filter(data, labels, num_bins=10, seed=42, num_to_sample=100):
     np.random.seed(seed)
     bins = np.linspace(0, 1, num_bins + 1)
-    num_to_sample = len(data)
     subset_indices = []
 
     for i in range(num_bins):
