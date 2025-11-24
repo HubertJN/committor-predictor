@@ -210,6 +210,7 @@ def prepare_datasets(grids, attrs, train_idx, valid_idx, test_idx, model_type="c
         train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds
     """
     # Create train/validation datasets
+    print(len(grids[train_idx]), len(grids[valid_idx]), len(grids[test_idx]))
     train_ds = to_cnn_dataset(grids[train_idx], attrs[train_idx],
                               device=device, augment=augment)
     valid_ds = to_cnn_dataset(grids[valid_idx], attrs[valid_idx],
