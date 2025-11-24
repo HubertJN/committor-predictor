@@ -103,7 +103,7 @@ def to_cnn_dataset(grids, attrs, device="cpu", augment=False):
     return IsingDatasetCNN(data_tensor, labels_tensor, device=device, augment=augment)
 
 # ----------------- Uniform distribution filter -----------------
-def uniform_filter(data, labels, num_bins=10, seed=42, total_samples=1000):
+def uniform_filter(data, labels, num_bins=10, seed=42, total_samples=100000):
     np.random.seed(seed)
     bins = np.linspace(0, 1, num_bins + 1)
     
