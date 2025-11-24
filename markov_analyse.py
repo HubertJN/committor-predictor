@@ -118,19 +118,19 @@ for m in m_list:
     its_results[m] = its
 
     print("Eigenvalues:", eigvals[:5])
-    print("Implied timescales:", its[:5])
+    #print("Implied timescales:", its[:5])
 
     # 3. Locality
     loc = locality_metric(T, band_radius=1)
     print(f"Locality (±1 bin): {loc:.4f}")
 
     # 4. Chapman–Kolmogorov test, if possible
-    if (2*m) in T_dict:
-        ck_max, ck_fro = ck_test(T, T_dict[2*m])
-        print(f"CK max |diff|  vs T(2τ): {ck_max:.4e}")
-        print(f"CK Frobenius norm vs T(2τ): {ck_fro:.4e}")
-    else:
-        print(f"No CK test available for m={m} -> 2m not saved.")
+    #if (2*m) in T_dict:
+        #ck_max, ck_fro = ck_test(T, T_dict[2*m])
+        #print(f"CK max |diff|  vs T(2τ): {ck_max:.4e}")
+        #print(f"CK Frobenius norm vs T(2τ): {ck_fro:.4e}")
+    #else:
+        #print(f"No CK test available for m={m} -> 2m not saved.")
 
     S = T.shape[0]
     A_states = np.array([0])        # or multiple indices
@@ -147,9 +147,9 @@ for m in m_list:
 # Compare implied timescales across lags
 # ============================
 
-print("\n=== Implied Timescales Comparison ===")
-for m in m_list:
-    print(f"m={m}, tau={m}: {its_results[m][:5]}")
+#print("\n=== Implied Timescales Comparison ===")
+#for m in m_list:
+#    print(f"m={m}, tau={m}: {its_results[m][:5]}")
 
 exit()
 
