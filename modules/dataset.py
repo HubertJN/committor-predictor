@@ -67,25 +67,20 @@ class IsingDatasetCNN(Dataset):
                 augmented_grids.append(rotated)
                 augmented_labels.append(labels)
 
-            # Collect reflections for each existing grid in augmented_grids
-            new_grids = []
-            new_labels = []
-            for g, l in zip(augmented_grids, augmented_labels):
+            # Collect reflections for each existing grid
+            for g, l in zip(grids, labels):
                 # Horizontal flip (x-axis)
-                new_grids.append(torch.flip(g, dims=[2]))
-                new_labels.append(l)
+                augmented_grids.append(torch.flip(g, dims=[2]))
+                augmented_labels.append(l)
                 # Vertical flip (y-axis)
-                new_grids.append(torch.flip(g, dims=[3]))
-                new_labels.append(l)
+                augmented_grids.append(torch.flip(g, dims=[3]))
+                augmented_labels.append(l)
                 # Main diagonal (transpose x<->y)
-                new_grids.append(g.transpose(2, 3))
-                new_labels.append(l)
+                augmented_grids.append(g.transpose(2, 3))
+                augmented_labels.append(l)
                 # Anti-diagonal (flip + transpose)
-                new_grids.append(torch.flip(g, dims=[2,3]).transpose(2, 3))
-                new_labels.append(l)
-
-            augmented_grids += new_grids
-            augmented_labels += new_labels
+                augmented_grids.append(torch.flip(g, dims=[2,3]).transpose(2, 3))
+                augmented_labels.append(l)
 
         # Concatenate all augmented versions
         self.data = torch.cat(augmented_grids, dim=0)
