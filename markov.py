@@ -39,7 +39,6 @@ gpu_nsms = gasp.gpu_nsms
 ngrids = 4 * gpu_nsms * 32
 
 # --- Load trained model ---
-device = "cuda" if torch.cuda.is_available() else "cpu"
 checkpoint_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 channels = checkpoint['channels']
@@ -151,23 +150,23 @@ cluster_sizes_all = attrs[:, 1]
 # Sort all frames by cluster size (largest first)
 sorted_idx = np.argsort(cluster_sizes_all)[::-1]
 
-top4_gids = []
+topX_gids = []
 seen = set()
 
 for idx in sorted_idx:
     gid = grid_ids_all[idx]
     if gid not in seen:
-        top4_gids.append(gid)
+        topX_gids.append(gid)
         seen.add(gid)
-    if len(top4_gids) == 4:
+    if len(topX_gids) == 2:
         break
 
-print("Top 4 GIDs (by largest cluster sizes):", top4_gids)
+print("Top X GIDs (by largest cluster sizes):", topX_gids)
 
 # Load the 4 trajectories and concatenate
 traj_list = []
 
-for gid in top4_gids:
+for gid in topX_gids:
     idx = np.where(grid_ids_all == gid)[0]
     idx.sort()
     grids_gid, _, _ = load_hdf5_raw(h5path, indices=idx)
@@ -203,8 +202,8 @@ for b in range(0, S):   # interior bins only
     sampled_frames[b] = np.random.choice(indices)
     print(f"Bin {b}: sampled frame index {sampled_frames[b]}")
 
-m_list = [1, 2, 4, 8, 16, 32, 64]
-n_repeats = 8
+m_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
+n_repeats = 2
 T_dict = {}
 
 for m in m_list:
@@ -243,8 +242,8 @@ for m in m_list:
             # ---- Run GASP m steps ----
             gasp.run_committor_calc(
                 L, ngrids, m+1, beta, h,
-                grid_output_int=1,
-                mag_output_int=1,
+                grid_output_int=m,
+                mag_output_int=m,
                 grid_input="NumPy",
                 grid_array=gridlist,
                 keep_grids=True,
@@ -252,15 +251,15 @@ for m in m_list:
                 dn_threshold=-1.01,
                 nsms=gpu_nsms,
                 gpu_method=2,
-                outname="None"
+                outname="None",
+                max_keep_grids= 2*ngrids
             )
 
             # ---- Collect ngrids destination frames ----
             traj = np.zeros((ngrids, L, L), dtype=np.int8)
             for i in range(ngrids):
                 traj[i] = gasp.grids[-1][i].grid
-                if (gasp.grids[-1][i].isweep != m):
-                    print("Time to cry")
+            print("isweep of saved trajectory", gasp.grids[-1][0].isweep)   # Sanity check
 
             traj_list.append(traj)
 
@@ -281,7 +280,6 @@ for m in m_list:
 # ----- Save all T matrices -----
 np.savez("T_matrices.npz", **{f"T_m{m}": T_dict[m] for m in m_list})
 print("\nSaved all T(m) matrices to T_matrices.npz")
-
 
 # ----------------- TIMING: total -----------------
 if device == "cuda":
