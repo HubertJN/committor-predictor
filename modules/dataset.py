@@ -69,6 +69,8 @@ class IsingDatasetCNN(Dataset):
 
             # Collect reflections for each existing grid
             for g, l in zip(grids, labels):
+                g = g.unsqueeze(0)
+                l = l.unsqueeze(0)
                 # Horizontal flip (x-axis)
                 augmented_grids.append(torch.flip(g, dims=[2]))
                 augmented_labels.append(l)
