@@ -34,6 +34,10 @@ h5path = f"../data/markov_{beta:.3f}_{h:.3f}.hdf5"
 
 _, attrs, headers = load_hdf5_raw(h5path, load_grids=False)
 
+L = headers["L"]
+gpu_nsms = gasp.gpu_nsms
+ngrids = 4 * gpu_nsms * 32
+
 # --- Load trained model ---
 device = "cuda" if torch.cuda.is_available() else "cpu"
 checkpoint_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
@@ -92,7 +96,7 @@ def compute_committors_for_trajectory(grids, model, device, batch_size=1024):
         torch.cuda.synchronize()
 
     t1 = time.perf_counter()
-    print(f"  Fast batched inference (len={Tlen}) took {t1 - t0:.2f} s")
+    print(f"  Fast batched inference took {t1 - t0:.2f} s")
 
     return q
 
@@ -108,107 +112,76 @@ def bin_state(q):
 def build_T_matrix_for_lag(m, traj_dict):
     C_matrix = np.zeros((S, S), dtype=np.int32)
 
-    print(f"\nBuilding T-matrix for m={m}")
-    t_start = time.perf_counter()
+    for b, frames in traj_dict.items():
 
-    for gid, grids in traj_dict.items():
-        print(f"Processing GID={gid}, length={len(grids)}")
+        # ----------------------------------------------------
+        # 1. Compute committor for the initial frame
+        # ----------------------------------------------------
+        s_i = b
 
-        # 1) Compute committors in batches
-        q_traj = compute_committors_for_trajectory(grids, model, device)
+        # ----------------------------------------------------
+        # 2. Compute committors for ALL generated frames
+        # ----------------------------------------------------
+        # frames shape: (ngrids, L, L)
+        q_dest = compute_committors_for_trajectory(frames, model, device)   # shape (ngrids,)
 
-        # 2) Build transitions
-        Tlen = len(q_traj)
-        for i in range(0, Tlen - m, m):
-            j = i + m
-            s_i = bin_state(q_traj[i])
-            s_j = bin_state(q_traj[j])
+        # ----------------------------------------------------
+        # 3. Count transitions for each independent m-step
+        # ----------------------------------------------------
+        for q_j in q_dest:
+            s_j = bin_state(q_j)
             C_matrix[s_i, s_j] += 1
 
-    # 3) Normalize (avoid zero rows)
+    # --------------------------------------------------------
+    # 4. Normalize → transition matrix
+    # --------------------------------------------------------
+    print(C_matrix)
     row_sums = C_matrix.sum(axis=1, keepdims=True)
-    T_matrix = np.zeros_like(C_matrix, dtype=np.float32)
+    T = np.zeros_like(C_matrix, dtype=float)
+
     mask = row_sums[:, 0] > 0
-    T_matrix[mask] = C_matrix[mask] / row_sums[mask]
+    T[mask] = C_matrix[mask] / row_sums[mask]
 
-    if device == "cuda":
-        torch.cuda.synchronize()
-    print(f"T matrix for m={m} built in {time.perf_counter()-t_start:.2f} s")
+    return T
 
-    return T_matrix
+# Extract needed arrays
+grid_ids_all = attrs[:, 4].astype(int)
+cluster_sizes_all = attrs[:, 1]
 
-def implied_timescales(T, tau):
-    eigvals, _ = np.linalg.eig(T)
-    eigvals = np.real(eigvals)
-    idx = np.argsort(-eigvals)        # descending
-    eigvals = eigvals[idx]
-    nontrivial = eigvals[1:]          # skip λ=1
-    its = -tau / np.log(nontrivial)
-    return its
+# Sort all frames by cluster size (largest first)
+sorted_idx = np.argsort(cluster_sizes_all)[::-1]
 
-def grids_to_process(num_g):
-    grid_ids = attrs[:, 4].astype(int)
-    cluster_sizes = attrs[:, 1]
+top4_gids = []
+seen = set()
 
-    # 1. Find the index of the absolute maximum cluster size
-    imax = np.argmax(cluster_sizes)
+for idx in sorted_idx:
+    gid = grid_ids_all[idx]
+    if gid not in seen:
+        top4_gids.append(gid)
+        seen.add(gid)
+    if len(top4_gids) == 4:
+        break
 
-    # 2. Extract the grid ID that has the largest cluster
-    gid_global_max = grid_ids[imax]
+print("Top 4 GIDs (by largest cluster sizes):", top4_gids)
 
-    # 3. Randomly choose the remaining grid IDs (excluding this one)
-    unique_gids = np.unique(grid_ids)
-    remaining = unique_gids[unique_gids != gid_global_max]
+# Load the 4 trajectories and concatenate
+traj_list = []
 
-    if num_g > 1:
-        random_gids = np.random.choice(remaining, size=num_g-1, replace=False)
-        selected_gids = np.concatenate(([gid_global_max], random_gids))
-    else:
-        selected_gids = np.array([gid_global_max])
-
-    print(f"Selected {num_g} grid IDs (random + guaranteed max cluster):")
-    print(f"  grid_id={gid_global_max}, max_cluster={cluster_sizes[imax]}")
-
-    for gid in selected_gids[1:]:
-        print(f"  grid_id={gid}")
-
-    selected_gids = np.sort(selected_gids)
-
-    return grid_ids, selected_gids
-
-def _load_single_gid(args):
-    """
-    Worker function executed in its own process.
-    Uses the user's load_hdf5_raw function.
-    """
-    h5path, gid, grid_ids = args
-    import numpy as np
-    from modules.dataset import load_hdf5_raw  # must be imported inside worker
-
-    # Find indices for this GID
-    idx = np.where(grid_ids == gid)[0]
+for gid in top4_gids:
+    idx = np.where(grid_ids_all == gid)[0]
     idx.sort()
+    grids_gid, _, _ = load_hdf5_raw(h5path, indices=idx)
+    print(f"Loaded trajectory GID={gid}, length={len(grids_gid)}")
+    traj_list.append(grids_gid)
 
-    # Use your existing loader
-    grids, attrs, _ = load_hdf5_raw(h5path, indices=idx)
+# Concatenate into one long trajectory
+grids_main = np.concatenate(traj_list, axis=0)
+print(f"Total concatenated length = {len(grids_main)}")
 
-    return gid, grids, attrs
+# Compute committor values for *all* frames
+q_main = compute_committors_for_trajectory(grids_main, model, device)
 
-def preload_all_trajectories(h5path, grid_ids, top_gids, n_workers=8):
-    """
-    Parallelized preload using up to n_workers processes.
-    Each GID loaded independently → ideal for interleaved datasets.
-    """
-    args_list = [(h5path, int(gid), grid_ids) for gid in top_gids]
-
-    traj_dict = {}
-
-    with Pool(processes=n_workers) as pool:
-        for gid, grids, attrs in pool.map(_load_single_gid, args_list):
-            traj_dict[gid] = grids
-            #print(f"Preloaded GID={gid}, length={len(grids)}")
-
-    return traj_dict
+print("Committor range:", q_main.min(), q_main.max())
 
 # --- Committor boundaries ---
 q_A = 0.02
@@ -217,22 +190,98 @@ q_B = 0.98
 num_steps = 12
 q_bins = np.linspace(q_A, q_B, num_steps)
 N = len(q_bins) - 1
+bin_ids = np.array([bin_state(q) for q in q_main])
 S = N + 2
 
-m_list = [2]
-its_list = []
-T_dict = {}
-num_g = 1
+sampled_frames = {}
 
-grid_ids, top_gids = grids_to_process(num_g)
-traj_dict = preload_all_trajectories(h5path, grid_ids, top_gids, n_workers=8)
+for b in range(0, S):   # interior bins only
+    indices = np.where(bin_ids == b)[0]
+    if len(indices) == 0:
+        print(f"Bin {b}: no frames available.")
+        continue
+    sampled_frames[b] = np.random.choice(indices)
+    print(f"Bin {b}: sampled frame index {sampled_frames[b]}")
+
+m_list = [1, 2, 4, 8, 16, 32, 64]
+n_repeats = 8
+T_dict = {}
 
 for m in m_list:
-    tau = m * 1.0
-    T_m = build_T_matrix_for_lag(m, traj_dict)
+    print(f"\n=== Processing lag m={m} ===")
+
+    generated_trajs = {}
+
+    for b in range(S):
+
+        # ----------------------------------------------
+        # Frames inside bin b
+        # ----------------------------------------------
+        frames_in_bin = np.where(bin_ids == b)[0]
+        if len(frames_in_bin) == 0:
+            print(f"Bin {b}: no frames available, skipping.")
+            continue
+
+        # ----------------------------------------------
+        # Accumulate repeated independent short trajectories
+        # ----------------------------------------------
+        traj_list = []     # will store n_repeats × (ngrids, L, L)
+
+        for r in range(n_repeats):
+            print(f"  Bin {b}: repeat {r+1}/{n_repeats}")
+
+            # ---- Draw starting grids for this repeat ----
+            if len(frames_in_bin) >= gpu_nsms:
+                # Enough frames → sample without replacement
+                chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=False)
+            else:
+                # Not enough frames → sample with replacement
+                chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
+
+            gridlist = [grids_main[i].copy() for i in chosen]
+
+            # ---- Run GASP m steps ----
+            gasp.run_committor_calc(
+                L, ngrids, m+1, beta, h,
+                grid_output_int=1,
+                mag_output_int=1,
+                grid_input="NumPy",
+                grid_array=gridlist,
+                keep_grids=True,
+                up_threshold=1.01,
+                dn_threshold=-1.01,
+                nsms=gpu_nsms,
+                gpu_method=2,
+                outname="None"
+            )
+
+            # ---- Collect ngrids destination frames ----
+            traj = np.zeros((ngrids, L, L), dtype=np.int8)
+            for i in range(ngrids):
+                traj[i] = gasp.grids[-1][i].grid
+                if (gasp.grids[-1][i].isweep != m):
+                    print("Time to cry")
+
+            traj_list.append(traj)
+
+        # ----------------------------------------------
+        # Concatenate N repeats into one array
+        # ----------------------------------------------
+        generated_trajs[b] = np.concatenate(traj_list, axis=0)
+
+        total_len = generated_trajs[b].shape[0]
+        print(f"  Bin {b}: total trajectories = {total_len}")
+
+    # ----------------------------------------------
+    # Build transition matrix for lag m
+    # ----------------------------------------------
+    T_m = build_T_matrix_for_lag(m, generated_trajs)
     T_dict[m] = T_m
 
+# ----- Save all T matrices -----
 np.savez("T_matrices.npz", **{f"T_m{m}": T_dict[m] for m in m_list})
+print("\nSaved all T(m) matrices to T_matrices.npz")
+
 
 # ----------------- TIMING: total -----------------
 if device == "cuda":
