@@ -202,8 +202,8 @@ for b in range(0, S):   # interior bins only
     sampled_frames[b] = np.random.choice(indices)
     print(f"Bin {b}: sampled frame index {sampled_frames[b]}")
 
-m_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
-n_repeats = 2
+m_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+n_repeats = 8
 T_dict = {}
 
 for m in m_list:
@@ -278,8 +278,8 @@ for m in m_list:
     T_dict[m] = T_m
 
 # ----- Save all T matrices -----
-np.savez("T_matrices.npz", **{f"T_m{m}": T_dict[m] for m in m_list})
-print("\nSaved all T(m) matrices to T_matrices.npz")
+np.savez(f"T_matrices_{beta:.3f}_{h:.3f}.npz", **{f"T_m{m}": T_dict[m] for m in m_list})
+print(f"\nSaved all T(m) matrices to T_matrices_{beta:.3f}_{h:.3f}.npz")
 
 # ----------------- TIMING: total -----------------
 if device == "cuda":
