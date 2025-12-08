@@ -100,7 +100,7 @@ def to_cnn_dataset(grids, attrs, device="cpu", augment=False):
     return IsingDatasetCNN(data_tensor, labels_tensor, device=device, augment=augment)
 
 # ----------------- Uniform distribution filter -----------------
-def uniform_filter(data, labels, num_bins=10, seed=42, total_samples=100000):
+def uniform_filter(labels, num_bins=10, seed=42, total_samples=100000):
     np.random.seed(seed)
     bins = np.linspace(0, 1, num_bins + 1)
     
@@ -136,6 +136,8 @@ def uniform_filter(data, labels, num_bins=10, seed=42, total_samples=100000):
         bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
         selected = np.random.choice(bin_idx, size=num_to_take[i], replace=False)
         subset_indices.extend(selected)
+
+    subset_indices = np.sort(subset_indices)
     
     print(f"Selected {len(subset_indices)} samples as uniformly as possible across {num_bins} bins")
     return np.array(subset_indices)
@@ -163,7 +165,7 @@ def data_to_dataloader(train_ds, valid_ds, test_ds, bs, model_type="cnn"):
 
     return train_dl, valid_dl, test_dl
 
-def prepare_subset(h5path, uniform_bins=10, valid_size=0.2, test_size=0.2, seed=42, total_samples=None):
+def prepare_subset(h5path, uniform_bins=10, valid_size=0.2, test_size=0.2, seed=42, total_samples=10000):
     """
     Load grids and attributes from HDF5 and select a uniform subset if total_samples is specified.
 
@@ -172,14 +174,15 @@ def prepare_subset(h5path, uniform_bins=10, valid_size=0.2, test_size=0.2, seed=
         attrs_subset: np.ndarray
         train_idx, valid_idx, test_idx: np.ndarray
     """
-    print("Loading full dataset...")
-    grids, attrs, _ = load_hdf5_raw(h5path)
+    print("Loading attributes...")
+    _, attrs, _ = load_hdf5_raw(h5path, load_grids=False)
 
     np.random.seed(seed)
     if total_samples is not None:
         print(f"Applying uniform filter to select {total_samples} samples")
-        subset_indices = uniform_filter(grids, attrs[:,2], num_bins=uniform_bins, total_samples=total_samples)
-        grids = grids[subset_indices]
+        subset_indices = uniform_filter(attrs[:,2], num_bins=uniform_bins, total_samples=total_samples)
+        print("Loading selected grids...")
+        grids, _, _ = load_hdf5_raw(h5path, indices=subset_indices)
         attrs = attrs[subset_indices]
 
     # print("Filtering 0 committor data")
