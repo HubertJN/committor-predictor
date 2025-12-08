@@ -1,18 +1,45 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import argparse
+from modules.config import load_config
+import math
+
 np.set_printoptions(linewidth=np.inf)
 
+# --- Load Config ---
+config = load_config("config.yaml")
+
+# --- parse optional inputs ---
+parser = argparse.ArgumentParser()
+parser.add_argument("--beta", type=float, help="Override beta value")
+parser.add_argument("--h", type=float, help="Override h value")
+args = parser.parse_args()
+
+# --- apply overrides ---
+beta = args.beta if args.beta is not None else config.parameters.beta
+h = args.h if args.h is not None else config.parameters.h
+
 # ============================
-# Load Transition Matrices
+# Load Count Matrices
 # ============================
 
-data = np.load("T_matrices.npz")
+data = np.load(f"C_matrices_{beta:.3f}_{h:.3f}.npz")
 m_list = sorted(int(k.split("m")[-1]) for k in data.keys())
 
-# Build dict m -> T
+# Build dict m -> C
+C_dict = {}
+for m in m_list:
+    C_dict[m] = data[f"C_m{m}"]
+
+# Convert counts to transition matrices
 T_dict = {}
 for m in m_list:
-    T_dict[m] = data[f"T_m{m}"]
+    C = C_dict[m].astype(float)
+    row_sums = C.sum(axis=1, keepdims=True)
+    # Avoid division by zero
+    with np.errstate(divide='ignore', invalid='ignore'):
+        T = np.where(row_sums > 0, C / row_sums, 0.0)
+    T_dict[m] = T
 
 # ============================
 # Helper Functions
@@ -31,7 +58,7 @@ def implied_timescales(T, tau):
     eigvals = eigvals[idx]
 
     # skip λ = 1
-    nontrivial = eigvals[1:]
+    nontrivial = eigvals[1:6]
 
     # timescales
     its = -tau / np.log(nontrivial)
@@ -94,6 +121,85 @@ def mfpt_A_to_B(T, tau, A_states, B_states):
     MFPT_AB = np.mean(mfpts_A)
     return MFPT_AB
 
+def bootstrap_J_AB_from_counts(C,
+                               tau,
+                               A_states,
+                               B_states,
+                               n_boot=500,
+                               rng_seed=None):
+    """
+    Parametric bootstrap for nucleation rate J_AB from a count matrix C.
+
+    - C : (S, S) int array, counts at lag tau
+    - tau : lag time
+    - A_states, B_states : arrays of state indices
+    - n_boot : number of bootstrap samples
+    """
+    rng = np.random.default_rng(rng_seed)
+
+    C = np.asarray(C, dtype=int)
+    S = C.shape[0]
+
+    # Central transition matrix from C (same as in your code)
+    C_float = C.astype(float)
+    row_sums = C_float.sum(axis=1, keepdims=True)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        T_central = np.where(row_sums > 0, C_float / row_sums, 0.0)
+
+    # Central MFPT and nucleation rate
+    MFPT_AB = mfpt_A_to_B(T_central, tau, A_states, B_states)
+    k_AB = 1.0 / MFPT_AB
+    J_AB = k_AB / (64 * 64)
+
+    # Precompute row-wise probabilities for multinomial resampling
+    p = np.zeros_like(T_central)
+    row_sums_int = C.sum(axis=1)
+    for i in range(S):
+        Ni = row_sums_int[i]
+        if Ni > 0:
+            p[i] = C[i] / Ni
+        else:
+            # If no outgoing counts from i, keep it as a row of zeros
+            # (same behavior as your T-construction)
+            p[i, :] = 0.0
+
+    # Bootstrap samples of J_AB
+    J_samples = np.empty(n_boot, dtype=float)
+
+    for b in range(n_boot):
+        C_b = np.zeros_like(C)
+        for i in range(S):
+            Ni = row_sums_int[i]
+            if Ni > 0:
+                C_b[i] = rng.multinomial(Ni, p[i])
+            else:
+                C_b[i, :] = 0
+
+        # Build T_b in the same way as central T
+        C_b_float = C_b.astype(float)
+        row_sums_b = C_b_float.sum(axis=1, keepdims=True)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            T_b = np.where(row_sums_b > 0, C_b_float / row_sums_b, 0.0)
+
+        MFPT_b = mfpt_A_to_B(T_b, tau, A_states, B_states)
+        k_b = 1.0 / MFPT_b
+        J_samples[b] = k_b / (64 * 64)
+
+    # Summary statistics
+    J_mean = np.mean(J_samples)
+    J_std = np.std(J_samples, ddof=1)
+    J_low, J_high = np.percentile(J_samples, [2.5, 97.5])
+
+    stats = {
+        "J_central": J_AB,
+        "J_mean": J_mean,
+        "J_std": J_std,
+        "J_ci_95": (J_low, J_high),
+        "samples": J_samples,
+    }
+    return stats
+
+
 # ============================
 # Analysis Loop
 # ============================
@@ -124,53 +230,32 @@ for m in m_list:
     loc = locality_metric(T, band_radius=1)
     print(f"Locality (±1 bin): {loc:.4f}")
 
-    # 4. Chapman–Kolmogorov test, if possible
-    #if (2*m) in T_dict:
-        #ck_max, ck_fro = ck_test(T, T_dict[2*m])
-        #print(f"CK max |diff|  vs T(2τ): {ck_max:.4e}")
-        #print(f"CK Frobenius norm vs T(2τ): {ck_fro:.4e}")
-    #else:
-        #print(f"No CK test available for m={m} -> 2m not saved.")
-
     S = T.shape[0]
     A_states = np.array([0])        # or multiple indices
     B_states = np.array([S - 1])
 
-    MFPT_AB = mfpt_A_to_B(T, tau, A_states, B_states)
-    k_AB = 1.0 / MFPT_AB
+    # Use the original count matrix for this lag
+    C = C_dict[m]
 
-    J_AB = k_AB / (64*64)
+    stats = bootstrap_J_AB_from_counts(
+        C,
+        tau,
+        A_states,
+        B_states,
+        n_boot=500,      # adjust as desired
+        rng_seed=12345   # fixed seed for reproducibility
+    )
 
-    print("Nucleation rate:", J_AB)
+    J_central = stats["J_central"]
+    J_low, J_high = stats["J_ci_95"]
+    J_std = stats["J_std"]
 
-# ============================
-# Compare implied timescales across lags
-# ============================
+    exp = math.floor(math.log10(abs(J_central))) if J_central != 0 else 0
+    coeff_central = J_central / (10 ** exp) if J_central != 0 else 0
+    coeff_std = J_std / (10 ** exp) if J_central != 0 else 0
+    coeff_low = J_low / (10 ** exp) if J_central != 0 else 0
+    coeff_high = J_high / (10 ** exp) if J_central != 0 else 0
 
-#print("\n=== Implied Timescales Comparison ===")
-#for m in m_list:
-#    print(f"m={m}, tau={m}: {its_results[m][:5]}")
-
-exit()
-
-q_A = 0.05
-q_B = 0.95
-
-num_steps = int((q_B-q_A)/0.05)
-q_bins = np.linspace(q_A, q_B, num_steps)
-
-q_bins = np.concatenate((np.array([0]), q_bins, np.array([1])))
-
-q_values = (q_bins[:-1] + q_bins[1:]) / 2
-
-plt.plot(q_values, pi)
-plt.yscale('log')
-plt.savefig("figures/pi.pdf")
-
-for i in range(S):
-    q_i = 0
-    for j in range(S):
-        #if i != j:
-        q_i += q_values[j]*T[i,j]
-    #print(q_bins[i], q_i, q_bins[i+1])
+    print(f"Nucleation rate: ({coeff_central:.3f} +/- {coeff_std:.3f})e{exp}")
+    print(f"95% CI: [{coeff_low:.3f}e{exp}, {coeff_high:.3f}e{exp}]")
 
