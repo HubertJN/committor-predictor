@@ -5,7 +5,7 @@ import argparse
 import matplotlib.pyplot as plt
 from modules.config import load_config
 from modules.architecture import CNN
-from modules.dataset import load_hdf5_raw
+from modules.dataset import load_hdf5_raw, uniform_filter
 from multiprocessing import Pool
 import gasp
 np.set_printoptions(linewidth=np.inf)
@@ -30,7 +30,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 model_type = config.model.type.lower()
 
 # --- Dataset ---
-h5path = f"../data/markov_{beta:.3f}_{h:.3f}.hdf5"
+h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
 
 _, attrs, headers = load_hdf5_raw(h5path, load_grids=False)
 
@@ -108,7 +108,7 @@ def bin_state(q):
         k = np.digitize(q, q_bins)  # 1..N
         return k
 
-def build_T_matrix_for_lag(m, traj_dict):
+def build_C_matrix_for_lag(m, traj_dict):
     C_matrix = np.zeros((S, S), dtype=np.int32)
 
     for b, frames in traj_dict.items():
@@ -132,50 +132,22 @@ def build_T_matrix_for_lag(m, traj_dict):
             C_matrix[s_i, s_j] += 1
 
     # --------------------------------------------------------
-    # 4. Normalize → transition matrix
+    # 4. Return count matrix
     # --------------------------------------------------------
     print(C_matrix)
-    row_sums = C_matrix.sum(axis=1, keepdims=True)
-    T = np.zeros_like(C_matrix, dtype=float)
 
-    mask = row_sums[:, 0] > 0
-    T[mask] = C_matrix[mask] / row_sums[mask]
+    return C_matrix
 
-    return T
+# Load attributes
+_, attrs_all, _ = load_hdf5_raw(h5path, load_grids=False)
 
-# Extract needed arrays
-grid_ids_all = attrs[:, 4].astype(int)
-cluster_sizes_all = attrs[:, 1]
+# Apply uniform filter to select 1000 samples
+subset_indices = uniform_filter(attrs_all[:, 2], total_samples=10000)
 
-# Sort all frames by cluster size (largest first)
-sorted_idx = np.argsort(cluster_sizes_all)[::-1]
+# Load selected grids
+grids_main, _, _ = load_hdf5_raw(h5path, indices=subset_indices)
 
-topX_gids = []
-seen = set()
-
-for idx in sorted_idx:
-    gid = grid_ids_all[idx]
-    if gid not in seen:
-        topX_gids.append(gid)
-        seen.add(gid)
-    if len(topX_gids) == 2:
-        break
-
-print("Top X GIDs (by largest cluster sizes):", topX_gids)
-
-# Load the 4 trajectories and concatenate
-traj_list = []
-
-for gid in topX_gids:
-    idx = np.where(grid_ids_all == gid)[0]
-    idx.sort()
-    grids_gid, _, _ = load_hdf5_raw(h5path, indices=idx)
-    print(f"Loaded trajectory GID={gid}, length={len(grids_gid)}")
-    traj_list.append(grids_gid)
-
-# Concatenate into one long trajectory
-grids_main = np.concatenate(traj_list, axis=0)
-print(f"Total concatenated length = {len(grids_main)}")
+print(f"Selected {len(grids_main)} grids uniformly across committor bins")
 
 # Compute committor values for *all* frames
 q_main = compute_committors_for_trajectory(grids_main, model, device)
@@ -203,8 +175,9 @@ for b in range(0, S):   # interior bins only
     print(f"Bin {b}: sampled frame index {sampled_frames[b]}")
 
 m_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-n_repeats = 8
-T_dict = {}
+m_list=[512]
+n_repeats = 1
+C_dict = {}
 
 for m in m_list:
     print(f"\n=== Processing lag m={m} ===")
@@ -272,14 +245,14 @@ for m in m_list:
         print(f"  Bin {b}: total trajectories = {total_len}")
 
     # ----------------------------------------------
-    # Build transition matrix for lag m
+    # Build count matrix for lag m
     # ----------------------------------------------
-    T_m = build_T_matrix_for_lag(m, generated_trajs)
-    T_dict[m] = T_m
+    C_m = build_C_matrix_for_lag(m, generated_trajs)
+    C_dict[m] = C_m
 
-# ----- Save all T matrices -----
-np.savez(f"T_matrices_{beta:.3f}_{h:.3f}.npz", **{f"T_m{m}": T_dict[m] for m in m_list})
-print(f"\nSaved all T(m) matrices to T_matrices_{beta:.3f}_{h:.3f}.npz")
+# ----- Save all C matrices -----
+np.savez(f"C_matrices_{beta:.3f}_{h:.3f}.npz", **{f"C_m{m}": C_dict[m] for m in m_list})
+print(f"\nSaved all C(m) matrices to C_matrices_{beta:.3f}_{h:.3f}.npz")
 
 # ----------------- TIMING: total -----------------
 if device == "cuda":
