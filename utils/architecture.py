@@ -14,8 +14,8 @@ def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
     pred_phys = pred_all[n:]
 
     loss = loss_func(pred_data, yb)
-    #loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
-    #loss += 0.01 * (pred_phys[1].mean()) ** 2
+    loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
+    loss += 0.01 * (pred_phys[1].mean()) ** 2
 
     if opt is not None:
         loss.backward()
