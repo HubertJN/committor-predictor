@@ -6,20 +6,17 @@ import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool
 
 def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
-    if torch.rand(1).item() < 0.1:
-        xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
-        pred_all = model(xb_all)
-        pred_all = torch.clamp(pred_all, 0.0, 1.0)
+    xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
+    pred_all = model(xb_all)
+    pred_all = torch.clamp(pred_all, 0.0, 1.0)
 
-        n = xb.shape[0]
-        pred_data = pred_all[:n]
-        pred_phys = pred_all[n:]
+    n = xb.shape[0]
+    pred_data = pred_all[:n]
+    pred_phys = pred_all[n:]
 
-        loss = loss_func(pred_data, yb)
-        loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
-        loss += 0.01 * (pred_phys[1].mean()) ** 2
-    else:
-        loss = loss_func(model(xb), yb)
+    loss = loss_func(pred_data, yb)
+    #loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
+    #loss += 0.01 * (pred_phys[1].mean()) ** 2
 
     if opt is not None:
         loss.backward()
