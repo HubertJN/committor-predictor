@@ -6,7 +6,7 @@ import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool
 
 def loss_batch(model, loss_func, ones, zeros, xb, yb, opt=None):
-    if torch.random(()) < 0.1:
+    if torch.rand(1).item() < 0.1:
         xb_all = torch.cat([xb, ones, zeros], dim=0)
         pred_all = model(xb_all)
 
