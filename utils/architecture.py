@@ -8,7 +8,6 @@ from torch_geometric.nn import GCNConv, global_mean_pool
 def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
     xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
     pred_all = model(xb_all)
-    pred_all = torch.clamp(pred_all, 0.0, 1.0)
 
     n = xb.shape[0]
     pred_data = pred_all[:n]
@@ -151,9 +150,9 @@ class CNN(nn.Module):
 
         x = self.out(x)
 
-        if not self.training:  # clamp only in eval mode
-            x = torch.clamp(x, 0, 1)
-        return x
+        #if not self.training:  # clamp only in eval mode
+        #    x = torch.clamp(x, 0, 1)
+        return torch.sigmoid(x)
 
 
 class GNN(nn.Module):
