@@ -23,7 +23,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(
     f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5",
-    test_size=config.dataset.test_size
+    test_size=config.dataset.test_size,
+    total_samples=1000
 )
 train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
     grids, attrs, train_idx, valid_idx, test_idx,
@@ -62,6 +63,7 @@ else:
 
 save_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
 
+print(f"Model will be saved to: {save_path}")
 print(f"Starting training for {config.model.type.upper()}...")
 fit(config.training.epochs, model, loss_func, optimizer,
     train_dl, valid_dl, device, config, save_path)
