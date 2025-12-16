@@ -5,9 +5,9 @@ import torch.nn as nn
 import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-def loss_batch(model, loss_func, ones, zeros, xb, yb, opt=None):
+def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
     if torch.rand(1).item() < 0.1:
-        xb_all = torch.cat([xb, ones, zeros], dim=0)
+        xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
         pred_all = model(xb_all)
 
         n = xb.shape[0]
@@ -27,8 +27,8 @@ def loss_batch(model, loss_func, ones, zeros, xb, yb, opt=None):
     return loss.item(), len(xb)
 
 def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
-    zero = torch.zeros([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
-    one = torch.ones([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
+    spin_up = torch.full([64, 64], 1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
+    spin_down = torch.full([64, 64], -1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
 
     width = max(4, len(str(epochs)))  # determine width for epoch numbers
 
@@ -43,7 +43,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         train_losses = []
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
-            loss_val, n = loss_batch(model, loss_func, one, zero, xb, yb, opt)
+            loss_val, n = loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt)
             train_losses.append((loss_val, n))
 
         train_vals, train_counts = zip(*train_losses)
@@ -53,7 +53,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         model.eval()
         with torch.no_grad():
             val_losses = [
-                loss_batch(model, loss_func, one, zero, xb.to(device), yb.to(device))
+                loss_batch(model, loss_func, spin_up, spin_down, xb.to(device), yb.to(device))
                 for xb, yb in valid_dl
             ]
             val_vals, val_counts = zip(*val_losses)
