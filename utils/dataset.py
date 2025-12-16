@@ -150,14 +150,13 @@ def filter_zero_committor(grids, attrs):
     print(f"Filtered {len(grids) - len(grids_filtered)} grids with committor=0")
     return grids_filtered, attrs_filtered
 
-def data_to_dataloader(train_ds, valid_ds, test_ds, bs, model_type="cnn"):
+def data_to_dataloader(train_ds, valid_ds, test_ds, bs):
     """
     Return DataLoaders for training and validation datasets.
 
     Args:
         train_ds, valid_ds: Dataset objects
         bs: batch size
-        model_type: "cnn"
     """
     train_dl = TorchDataLoader(train_ds, batch_size=bs, shuffle=True)
     valid_dl = TorchDataLoader(valid_ds, batch_size=1)
@@ -202,7 +201,7 @@ def prepare_subset(h5path, uniform_bins=10, valid_size=0.2, test_size=0.2, seed=
 
     return grids, attrs, train_idx, valid_idx, test_idx
 
-def prepare_datasets(grids, attrs, train_idx, valid_idx, test_idx, model_type="cnn", device="cpu", batch_size=64, augment=True):
+def prepare_datasets(grids, attrs, train_idx, valid_idx, test_idx, device="cpu", batch_size=64, augment=True):
     """
     Take grids and attributes with train/valid indices, and produce datasets and dataloaders.
 
@@ -221,8 +220,7 @@ def prepare_datasets(grids, attrs, train_idx, valid_idx, test_idx, model_type="c
     print(f"Train size: {len(train_ds)}, Validation size: {len(valid_ds)}, Test size: {len(test_ds)}")
 
     # Create DataLoaders
-    train_dl, valid_dl, test_dl = data_to_dataloader(train_ds, valid_ds, test_ds, batch_size,
-                                            model_type=model_type.lower())
+    train_dl, valid_dl, test_dl = data_to_dataloader(train_ds, valid_ds, test_ds, batch_size)
     print(f"DataLoaders created: train_batches={len(train_dl)}, valid_batches={len(valid_dl)}, test_batches={len(test_dl)}")
 
     return train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds
