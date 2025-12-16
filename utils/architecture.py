@@ -95,8 +95,6 @@ class ResidualCNNLayer(nn.Module):
         """
         Args:
         - x: (bs, c, h, w)
-        - t_embed: (bs, t_embed_dim)
-        - y_embed: (bs, y_embed_dim)
         """
         res = x.clone() # (bs, c, h, w)
 
@@ -134,10 +132,9 @@ class ResidualLinearLayer(nn.Module):
         return x
 
 class CNN(nn.Module):
-    def __init__(self, input_size=64, channels=16,
+    def __init__(self, channels=16,
                  num_cnn_layers=3, num_fc_layers=2):
         super().__init__()
-        self.input_size = input_size
 
         self.init_conv = nn.Conv2d(1, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular")
 
