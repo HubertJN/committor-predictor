@@ -9,14 +9,15 @@ def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
     if torch.rand(1).item() < 0.1:
         xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
         pred_all = model(xb_all)
+        pred_all = torch.clamp(pred_all, 0.0, 1.0)
 
         n = xb.shape[0]
         pred_data = pred_all[:n]
         pred_phys = pred_all[n:]
 
         loss = loss_func(pred_data, yb)
-        loss += 0.01 * ((torch.clamp(pred_phys[0], 0, 1) - 1).mean()) ** 2
-        loss += 0.01 * (torch.clamp(pred_phys[1], 0, 1).mean()) ** 2
+        loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
+        loss += 0.01 * (pred_phys[1].mean()) ** 2
     else:
         loss = loss_func(model(xb), yb)
 
@@ -153,9 +154,9 @@ class CNN(nn.Module):
 
         x = self.out(x)
 
-        #if not self.training:  # clamp only in eval mode
-        #    x = torch.clamp(x, 0, 1)
-        return torch.sigmoid(x)
+        if not self.training:  # clamp only in eval mode
+            x = torch.clamp(x, 0, 1)
+        return x
 
 
 class GNN(nn.Module):
