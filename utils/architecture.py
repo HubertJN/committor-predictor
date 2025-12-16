@@ -5,10 +5,20 @@ import torch.nn as nn
 import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool
 
+def loss_batch(model, loss_func, ones, zeros, xb, yb, opt=None):
+    if torch.random(()) < 0.1:
+        xb_all = torch.cat([xb, ones, zeros], dim=0)
+        pred_all = model(xb_all)
 
-def loss_batch(model, loss_func, physics_loss, xb, yb, opt=None):
-    loss = loss_func(model(xb), yb)
-    loss += physics_loss
+        n = xb.shape[0]
+        pred_data = pred_all[:n]
+        pred_phys = pred_all[n:]
+
+        loss = loss_func(pred_data, yb)
+        loss += 0.1 * ((pred_phys[0] - 1).mean()) ** 2
+        loss += 0.1 * (pred_phys[1].mean()) ** 2
+    else:
+        loss = loss_func(model(xb), yb)
 
     if opt is not None:
         loss.backward()
@@ -16,16 +26,7 @@ def loss_batch(model, loss_func, physics_loss, xb, yb, opt=None):
         opt.zero_grad()
     return loss.item(), len(xb)
 
-
-def physics_func(model, xb, one, zero):
-    loss = 0
-    constant = 0.1
-    #loss += constant * (model(zero).mean()) ** 2
-    #loss += constant * ((model(one) - 1).mean()) ** 2
-    return loss
-
-
-def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
+def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
     zero = torch.zeros([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
     one = torch.ones([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
 
@@ -42,7 +43,7 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
         train_losses = []
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
-            loss_val, n = loss_batch(model, loss_func, physics_func(model, xb, one, zero), xb, yb, opt)
+            loss_val, n = loss_batch(model, loss_func, one, zero, xb, yb, opt)
             train_losses.append((loss_val, n))
 
         train_vals, train_counts = zip(*train_losses)
@@ -52,7 +53,7 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
         model.eval()
         with torch.no_grad():
             val_losses = [
-                loss_batch(model, loss_func, physics_func(model, xb.to(device), one, zero), xb.to(device), yb.to(device))
+                loss_batch(model, loss_func, one, zero, xb.to(device), yb.to(device))
                 for xb, yb in valid_dl
             ]
             val_vals, val_counts = zip(*val_losses)
