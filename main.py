@@ -3,9 +3,9 @@ import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from modules.architecture import CNN, fit, physics_func
-from modules.dataset import prepare_subset, prepare_datasets
-from modules.config import load_config
+from utils.architecture import CNN, fit
+from utils.dataset import prepare_subset, prepare_datasets
+from utils.config import load_config
 
 config = load_config("config.yaml")
 
@@ -27,7 +27,7 @@ grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(
 )
 train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
     grids, attrs, train_idx, valid_idx, test_idx,
-    config.model.type, device,
+    device,
     config.dataset.batch_size,
     augment=config.dataset.augment
 )
@@ -63,6 +63,6 @@ else:
 save_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
 
 print(f"Starting training for {config.model.type.upper()}...")
-fit(config.training.epochs, model, loss_func, physics_func, optimizer,
+fit(config.training.epochs, model, loss_func, optimizer,
     train_dl, valid_dl, device, config, save_path)
 print("Training complete.")
