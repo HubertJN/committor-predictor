@@ -18,12 +18,10 @@ training:
 
 model:
     type: "cnn"
-    input_size: 64
     channels: 64
-    num_cnn_layers: 5
-    num_fc_layers: 3
-    dropout: 0.2
+    num_cnn_layers: 3
+    num_fc_layers: 2
 
 parameters:
-    beta: 0.511
-    h: 0.04
+    beta: 0.55
+    h: 0.07
