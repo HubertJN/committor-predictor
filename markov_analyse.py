@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
-from modules.config import load_config
+from utils.config import load_config
 import math
 
 np.set_printoptions(linewidth=np.inf)
@@ -23,7 +23,7 @@ h = args.h if args.h is not None else config.parameters.h
 # Load Count Matrices
 # ============================
 
-data = np.load(f"C_matrices_{beta:.3f}_{h:.3f}.npz")
+data = np.load(f"data/C_matrices_{beta:.3f}_{h:.3f}.npz")
 m_list = sorted(int(k.split("m")[-1]) for k in data.keys())
 
 # Build dict m -> C
@@ -137,14 +137,14 @@ def bootstrap_J_AB_from_counts(C,
     """
     rng = np.random.default_rng(rng_seed)
 
-    C = np.asarray(C, dtype=int)
+    C = np.asarray(C, dtype=float)
+    print(C)
     S = C.shape[0]
 
     # Central transition matrix from C (same as in your code)
-    C_float = C.astype(float)
-    row_sums = C_float.sum(axis=1, keepdims=True)
+    row_sums = C.sum(axis=1, keepdims=True)
     with np.errstate(divide='ignore', invalid='ignore'):
-        T_central = np.where(row_sums > 0, C_float / row_sums, 0.0)
+        T_central = np.where(row_sums > 0, C / row_sums, 0.0)
 
     # Central MFPT and nucleation rate
     MFPT_AB = mfpt_A_to_B(T_central, tau, A_states, B_states)
