@@ -33,12 +33,11 @@ train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
     augment=config.dataset.augment
 )
 
-if config.model.type == "cnn":
-    model = CNN(
-        channels=config.model.channels,
-        num_cnn_layers=config.model.num_cnn_layers,
-        num_fc_layers=config.model.num_fc_layers,
-    ).to(device)
+model = CNN(
+    channels=config.model.channels,
+    num_cnn_layers=config.model.num_cnn_layers,
+    num_fc_layers=config.model.num_fc_layers,
+).to(device)
 
 decay, no_decay = [], []
 for name, param in model.named_parameters():
