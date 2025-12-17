@@ -159,8 +159,8 @@ def data_to_dataloader(train_ds, valid_ds, test_ds, bs):
         bs: batch size
     """
     train_dl = TorchDataLoader(train_ds, batch_size=bs, shuffle=True)
-    valid_dl = TorchDataLoader(valid_ds, batch_size=1)
-    test_dl = TorchDataLoader(test_ds, batch_size=1)
+    valid_dl = TorchDataLoader(valid_ds, batch_size=bs)
+    test_dl = TorchDataLoader(test_ds, batch_size=bs)
 
     return train_dl, valid_dl, test_dl
 
