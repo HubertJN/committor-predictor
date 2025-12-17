@@ -31,9 +31,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.ndimage import label
 import matplotlib.gridspec as gridspec
-from modules.architecture import CNN
-from modules.dataset import prepare_subset, prepare_datasets
-from modules.config import load_config
+from utils.architecture import CNN
+from utils.dataset import prepare_subset, prepare_datasets
+from utils.config import load_config
 
 # =======================
 # --- Plotting Parameters ---
@@ -49,7 +49,6 @@ plt.rcParams.update({
     'legend.fontsize': FONT_SIZE * 0.9,
     'figure.titlesize': FONT_SIZE * 1.1
 })
-
 
 # --- Load Config ---
 config = load_config("config.yaml")
@@ -69,13 +68,14 @@ model_type = config.model.type.lower()
 
 # --- Dataset ---
 h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+print(f"Loading dataset from {h5path}...")
 batch_size = config.dataset.batch_size
 test_size = config.dataset.test_size
 
 grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=test_size)
 train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
     grids, attrs, train_idx, valid_idx, test_idx,
-    model_type, device,
+    device,
     batch_size,
     augment=False
 )
@@ -88,11 +88,9 @@ num_cnn_layers = checkpoint['num_cnn_layers']
 num_fc_layers = checkpoint['num_fc_layers']
 
 model = CNN(
-    input_size=config.model.input_size,
     channels=channels,
     num_cnn_layers=num_cnn_layers,
     num_fc_layers=num_fc_layers,
-    dropout=config.model.dropout
 ).to(device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
