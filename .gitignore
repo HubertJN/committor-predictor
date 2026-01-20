@@ -2,3 +2,4 @@ utils/__pycache__
 figures/*
 models/*
 data/*
+ising-generator/
