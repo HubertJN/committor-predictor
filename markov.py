@@ -3,12 +3,43 @@ import torch
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-from modules.config import load_config
-from modules.architecture import CNN
-from modules.dataset import load_hdf5_raw, uniform_filter
+import math
+from utils.config import load_config
+from utils.architecture import CNN
+from utils.dataset import load_hdf5_raw, uniform_filter
 from multiprocessing import Pool
 import gasp
 np.set_printoptions(linewidth=np.inf)
+
+def evaluate_increasing_ones_grid(
+    model: torch.nn.Module,
+    L: int,
+    device: str,
+    scan_bins: int = 32,
+):
+    """Run the model on grids that start all -1 and gradually flip more sites to 1."""
+
+    scan_bins = max(1, scan_bins)
+    total_spins = L * L
+    ones_values = np.unique(np.linspace(0, total_spins, scan_bins, dtype=int))
+    if ones_values[-1] != total_spins:
+        ones_values = np.append(ones_values, total_spins)
+
+    base_flat = -np.ones(total_spins, dtype=np.float32)
+    print("\nCommittor predictions for progressively more +1 spins:")
+    print("ones | q-value | ascii")
+    with torch.no_grad():
+        for ones in ones_values:
+            grid_flat = base_flat.copy()
+            grid_flat[:ones] = 1.0
+            grid = grid_flat.reshape(L, L)
+            tensor = torch.from_numpy(grid).unsqueeze(0).unsqueeze(0).to(device)
+            out = model(tensor)
+            value = float(out.squeeze().item())
+            bars = min(10, max(0, int(round(value * 10))))
+            bar = "#" * bars + "-" * (10 - bars)
+            print(f"{ones:4d} | {value:.6f} | {bar}")
+
 
 # ----------------- TIMING: total -----------------
 t_total_start = time.perf_counter()
@@ -20,6 +51,12 @@ config = load_config("config.yaml")
 parser = argparse.ArgumentParser()
 parser.add_argument("--beta", type=float, help="Override beta value")
 parser.add_argument("--h", type=float, help="Override h value")
+parser.add_argument(
+    "--scan-bins",
+    type=int,
+    default=32,
+    help="Number of grid variants with increasing +1 spins",
+)
 args = parser.parse_args()
 
 # --- apply overrides ---
@@ -46,15 +83,15 @@ num_cnn_layers = checkpoint['num_cnn_layers']
 num_fc_layers = checkpoint['num_fc_layers']
 
 model = CNN(
-    input_size=config.model.input_size,
     channels=channels,
     num_cnn_layers=num_cnn_layers,
     num_fc_layers=num_fc_layers,
-    dropout=config.model.dropout
 ).to(device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
 print(f"{config.model.type.upper()} model loaded.")
+
+evaluate_increasing_ones_grid(model, L, device, scan_bins=args.scan_bins)
 
 @torch.no_grad()
 def compute_committors_for_trajectory(grids, model, device, batch_size=1024):
@@ -63,7 +100,7 @@ def compute_committors_for_trajectory(grids, model, device, batch_size=1024):
     Avoids costly torch.tensor construction inside the loop.
     """
     Tlen = len(grids)
-    q = np.empty(Tlen, dtype=np.float64)
+    q = np.ones(Tlen, dtype=np.float64)
 
     # Preallocate CPU buffer (pinned memory for fast transfer)
     # shape = (batch_size, 1, L, L)
@@ -108,8 +145,12 @@ def bin_state(q):
         k = np.digitize(q, q_bins)  # 1..N
         return k
 
-def build_C_matrix_for_lag(m, traj_dict):
-    C_matrix = np.zeros((S, S), dtype=np.int32)
+def norm_cdf(x, mu=0.0, sigma=1.0):
+    z = (x - mu) / sigma
+    return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+def build_C_matrix_for_lag(m, traj_dict, model_error):
+    C_matrix = np.zeros((S, S), dtype=np.float64)
 
     for b, frames in traj_dict.items():
 
@@ -130,6 +171,18 @@ def build_C_matrix_for_lag(m, traj_dict):
         for q_j in q_dest:
             s_j = bin_state(q_j)
             C_matrix[s_i, s_j] += 1
+
+        for q_j in q_dest:
+            for idx in range(len(full_bins) - 1):
+                if idx == len(full_bins) - 2:
+                    #print(full_bins[idx], q_j, norm_cdf(full_bins[idx], mu=q_j, sigma=model_error))
+                    area = 1.0 - norm_cdf(full_bins[idx], mu=q_j, sigma=model_error)
+                elif idx == 0:
+                    area = norm_cdf(full_bins[idx+1], mu=q_j, sigma=model_error)
+                else:
+                    area = norm_cdf(full_bins[idx+1], mu=q_j, sigma=model_error) - norm_cdf(full_bins[idx], mu=q_j, sigma=model_error)
+
+                #C_matrix[s_i, idx] += area
 
     # --------------------------------------------------------
     # 4. Return count matrix
@@ -157,9 +210,11 @@ print("Committor range:", q_main.min(), q_main.max())
 # --- Committor boundaries ---
 q_A = 0.02
 q_B = 0.98
+model_error = 0.0126
 
 num_steps = 12
 q_bins = np.linspace(q_A, q_B, num_steps)
+full_bins = np.concatenate(([0.0], q_bins, [1.0]))
 N = len(q_bins) - 1
 bin_ids = np.array([bin_state(q) for q in q_main])
 S = N + 2
@@ -175,8 +230,8 @@ for b in range(0, S):   # interior bins only
     print(f"Bin {b}: sampled frame index {sampled_frames[b]}")
 
 m_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-m_list=[512]
-n_repeats = 1
+m_list=[1024]
+n_repeats = 4
 C_dict = {}
 
 for m in m_list:
@@ -247,12 +302,12 @@ for m in m_list:
     # ----------------------------------------------
     # Build count matrix for lag m
     # ----------------------------------------------
-    C_m = build_C_matrix_for_lag(m, generated_trajs)
+    C_m = build_C_matrix_for_lag(m, generated_trajs, model_error)
     C_dict[m] = C_m
 
 # ----- Save all C matrices -----
-np.savez(f"C_matrices_{beta:.3f}_{h:.3f}.npz", **{f"C_m{m}": C_dict[m] for m in m_list})
-print(f"\nSaved all C(m) matrices to C_matrices_{beta:.3f}_{h:.3f}.npz")
+np.savez(f"data/C_matrices_{beta:.3f}_{h:.3f}.npz", **{f"C_m{m}": C_dict[m] for m in m_list})
+print(f"\nSaved all C(m) matrices to data/C_matrices_{beta:.3f}_{h:.3f}.npz")
 
 # ----------------- TIMING: total -----------------
 if device == "cuda":
