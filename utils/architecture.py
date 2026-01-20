@@ -136,7 +136,7 @@ class CNN(nn.Module):
                  num_cnn_layers=3, num_fc_layers=2):
         super().__init__()
 
-        self.init_conv = nn.Conv2d(1, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular")
+        self.init_conv = nn.Sequential(nn.Conv2d(1, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular"), nn.BatchNorm2d(channels), nn.SiLU())
 
         self.cnn_blocks = nn.ModuleList([
             ResidualCNNLayer(channels) for _ in range(num_cnn_layers)
