@@ -31,9 +31,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from scipy.ndimage import label
 import matplotlib.gridspec as gridspec
-from modules.architecture import CNN
-from modules.dataset import prepare_subset, prepare_datasets
-from modules.config import load_config
+from utils.architecture import CNN
+from utils.dataset import prepare_subset, prepare_datasets
+from utils.config import load_config
 
 # =======================
 # --- Plotting Parameters ---
@@ -49,7 +49,6 @@ plt.rcParams.update({
     'legend.fontsize': FONT_SIZE * 0.9,
     'figure.titlesize': FONT_SIZE * 1.1
 })
-
 
 # --- Load Config ---
 config = load_config("config.yaml")
@@ -69,13 +68,14 @@ model_type = config.model.type.lower()
 
 # --- Dataset ---
 h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+print(f"Loading dataset from {h5path}...")
 batch_size = config.dataset.batch_size
 test_size = config.dataset.test_size
 
-grids, attrs, train_idx, valid_idx = prepare_subset(h5path, test_size=test_size)
-train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
-    grids, attrs, train_idx, valid_idx,
-    model_type, device,
+grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=test_size)
+train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
+    grids, attrs, train_idx, valid_idx, test_idx,
+    device,
     batch_size,
     augment=False
 )
@@ -88,11 +88,9 @@ num_cnn_layers = checkpoint['num_cnn_layers']
 num_fc_layers = checkpoint['num_fc_layers']
 
 model = CNN(
-    input_size=config.model.input_size,
     channels=channels,
     num_cnn_layers=num_cnn_layers,
     num_fc_layers=num_fc_layers,
-    dropout=config.model.dropout
 ).to(device)
 model.load_state_dict(checkpoint['model_state_dict'])
 model.eval()
@@ -129,7 +127,7 @@ plt.plot(x_fit, y_fit, color=colors['firebrick_red'], linewidth=2, label="Sigmoi
 #plt.vlines(7, 0, 1, linestyle="dashed", color="grey")
 plt.xlabel("Largest Cluster Size")
 plt.ylabel("Target Committor")
-plt.title("Cluster Size vs Committor with Sigmoid Fit")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
 #plt.legend()
 plt.tight_layout()
 plt.xlim(-25, 800)
@@ -140,20 +138,30 @@ print(f"Saved cluster size vs committor plot with error bars to {config.paths.pl
 # =======================
 # --- CNN Predictions ---
 # =======================
-y_valid = np.array([valid_ds[i][1].item() for i in range(len(valid_ds))])
-y_valid_err = attrs[:,3][valid_idx]
-x_valid = torch.stack([valid_ds[i][0] for i in range(len(valid_ds))]).to(device)
+y_train = np.array([train_ds[i][1].item() for i in range(len(train_ds))])
+y_train_err = attrs[:,3][train_idx]
 
-with torch.no_grad():
-    predictions = model(x_valid).squeeze().cpu().numpy()
-rmse = np.sqrt(np.mean((predictions - y_valid)**2))
+# Process in chunks to avoid GPU memory issues
+chunk_size = 1024
+predictions = []
+for i in range(0, len(train_ds), chunk_size):
+    end_idx = min(i + chunk_size, len(train_ds))
+    batch = torch.stack([train_ds[j][0] for j in range(i, end_idx)]).to(device)
+    with torch.no_grad():
+        batch_preds = model(batch).squeeze().cpu().numpy()
+        if batch_preds.ndim == 0:
+            batch_preds = np.array([batch_preds])
+        predictions.extend(batch_preds)
+
+predictions = np.array(predictions)
+rmse = np.sqrt(np.mean((predictions - y_train)**2))
 
 plt.figure(figsize=(6,6))
-plt.errorbar(y_valid, predictions, xerr=y_valid_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
+plt.errorbar(y_train, predictions, xerr=y_train_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
 plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
-plt.title("CNN Predictions on Validation Set")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
 plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
          verticalalignment='top', horizontalalignment='left',
          bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
@@ -165,22 +173,22 @@ print(f"Saved CNN prediction plot to {config.paths.plot_dir}/predicted_cnn.pdf")
 # =======================
 # --- Sigmoid Predictions with best/worst highlights ---
 # =======================
-predictions = sigmoid(attrs[valid_idx][:,1], *popt)
-rmse = np.sqrt(np.mean((predictions - y_valid)**2))
-errors = np.abs(predictions - y_valid)
+predictions = sigmoid(attrs[train_idx][:,1], *popt)
+rmse = np.sqrt(np.mean((predictions - y_train)**2))
+errors = np.abs(predictions - y_train)
 worst_idx = np.argmax(errors)
-mask = (y_valid >= 0.2) & (y_valid <= 0.8)
+mask = (y_train >= 0.2) & (y_train <= 0.8)
 best_idx = np.argmin(errors[mask]) if np.any(mask) else np.argmin(errors)
-best_idx = np.arange(len(y_valid))[mask][best_idx] if np.any(mask) else best_idx
+best_idx = np.arange(len(y_train))[mask][best_idx] if np.any(mask) else best_idx
 
 plt.figure(figsize=(6,6))
-plt.errorbar(y_valid, predictions, xerr=y_valid_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
+plt.errorbar(y_train, predictions, xerr=y_train_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
 plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
-plt.scatter(y_valid[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors=colors['orange'], linewidths=2, label='Worst', zorder=10)
-plt.scatter(y_valid[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors=colors['light_green'], linewidths=2, label='Best', zorder=10)
+plt.scatter(y_train[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors=colors['orange'], linewidths=2, label='Worst', zorder=10)
+plt.scatter(y_train[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors=colors['light_green'], linewidths=2, label='Best', zorder=10)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
-plt.title("Cluster Prediction on Validation Set")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
 plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
          verticalalignment='top', horizontalalignment='left',
          bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
@@ -195,7 +203,7 @@ print(f"Saved sigmoid prediction plot to {config.paths.plot_dir}/predicted_clust
 # =======================
 
 def compute_saliency(idx):
-    x, _ = valid_ds[idx]
+    x, _ = train_ds[idx]
     x_grid = x.squeeze(0).cpu().numpy()
 
     # Center largest cluster
@@ -255,10 +263,10 @@ for ax, idx, grid, saliency, title in zip(
     ax.set_title(title)
     
     # Compute predictions
-    actual = y_valid[idx]
-    actual_err = attrs[valid_idx][idx,3]
-    sigmoid_pred = sigmoid(attrs[valid_idx][idx,1], *popt)
-    cnn_input = torch.stack([valid_ds[idx][0]]).to(device)
+    actual = y_train[idx]
+    actual_err = attrs[train_idx][idx,3]
+    sigmoid_pred = sigmoid(attrs[train_idx][idx,1], *popt)
+    cnn_input = torch.stack([train_ds[idx][0]]).to(device)
     with torch.no_grad():
         cnn_pred = model(cnn_input).squeeze().item()
     
@@ -305,10 +313,10 @@ ax.set_xticks([])
 ax.set_yticks([])
 
 # Compute predictions
-actual = y_valid[worst_idx]
-actual_err = attrs[valid_idx][worst_idx,3]
-sigmoid_pred = sigmoid(attrs[valid_idx][worst_idx,1], *popt)
-cnn_input = torch.stack([valid_ds[worst_idx][0]]).to(device)
+actual = y_train[worst_idx]
+actual_err = attrs[train_idx][worst_idx,3]
+sigmoid_pred = sigmoid(attrs[train_idx][worst_idx,1], *popt)
+cnn_input = torch.stack([train_ds[worst_idx][0]]).to(device)
 with torch.no_grad():
     cnn_pred = model(cnn_input).squeeze().item()
 

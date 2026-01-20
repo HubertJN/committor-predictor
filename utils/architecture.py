@@ -5,10 +5,17 @@ import torch.nn as nn
 import numpy as np
 from torch_geometric.nn import GCNConv, global_mean_pool
 
+def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
+    xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
+    pred_all = model(xb_all)
 
-def loss_batch(model, loss_func, physics_loss, xb, yb, opt=None):
-    loss = loss_func(model(xb), yb)
-    loss += physics_loss
+    n = xb.shape[0]
+    pred_data = pred_all[:n]
+    pred_phys = pred_all[n:]
+
+    loss = loss_func(pred_data, yb)
+    #loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
+    #loss += 0.01 * (pred_phys[1].mean()) ** 2
 
     if opt is not None:
         loss.backward()
@@ -16,18 +23,9 @@ def loss_batch(model, loss_func, physics_loss, xb, yb, opt=None):
         opt.zero_grad()
     return loss.item(), len(xb)
 
-
-def physics_func(model, xb, one, zero):
-    loss = 0
-    constant = 0.1
-    #loss += constant * (model(zero).mean()) ** 2
-    #loss += constant * ((model(one) - 1).mean()) ** 2
-    return loss
-
-
-def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
-    zero = torch.zeros([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
-    one = torch.ones([64, 64], dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
+def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
+    spin_up = torch.full([64, 64], 1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
+    spin_down = torch.full([64, 64], -1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
 
     width = max(4, len(str(epochs)))  # determine width for epoch numbers
 
@@ -42,7 +40,7 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
         train_losses = []
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
-            loss_val, n = loss_batch(model, loss_func, physics_func(model, xb, one, zero), xb, yb, opt)
+            loss_val, n = loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt)
             train_losses.append((loss_val, n))
 
         train_vals, train_counts = zip(*train_losses)
@@ -52,7 +50,7 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
         model.eval()
         with torch.no_grad():
             val_losses = [
-                loss_batch(model, loss_func, physics_func(model, xb.to(device), one, zero), xb.to(device), yb.to(device))
+                loss_batch(model, loss_func, spin_up, spin_down, xb.to(device), yb.to(device))
                 for xb, yb in valid_dl
             ]
             val_vals, val_counts = zip(*val_losses)
@@ -79,82 +77,95 @@ def fit(epochs, model, loss_func, physics_func, opt, train_dl, valid_dl, device=
     total_time = time.perf_counter() - total_start
     print(f"Total training time: {total_time:.2f}s")
 
-
-class ResidualCNN(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, dilation=1, dropout=0.0):
+class ResidualCNNLayer(nn.Module):
+    def __init__(self, channels: int):
         super().__init__()
-        padding = dilation * (kernel_size // 2)
-        self.conv = nn.Conv2d(
-            in_channels, out_channels,
-            kernel_size=kernel_size,
-            stride=1, padding=padding,
-            dilation=dilation, padding_mode="circular"
+        self.block1 = nn.Sequential(
+            nn.SiLU(),
+            #nn.BatchNorm2d(channels),
+            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular")
         )
-        self.dropout = nn.Dropout(dropout)
+        self.block2 = nn.Sequential(
+            nn.SiLU(),
+            #nn.BatchNorm2d(channels),
+            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular")
+        )
 
-        # Projection if channels differ
-        self.proj = None
-        if in_channels != out_channels:
-            self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+        - x: (bs, c, h, w)
+        """
+        res = x.clone() # (bs, c, h, w)
 
-    def forward(self, x):
-        identity = x
-        out = F.leaky_relu(self.conv(x))
-        out = self.dropout(out)
-        if self.proj is not None:
-            identity = self.proj(identity)
-        out += identity
-        return F.leaky_relu(out)
+        # Initial conv block
+        x = self.block1(x) # (bs, c, h, w)
 
+        # Second conv block
+        x = self.block2(x) # (bs, c, h, w)
+
+        # Add back residual
+        x = x + res # (bs, c, h, w)
+
+        return x
+    
+class ResidualLinearLayer(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Linear(channels, channels),
+            nn.SiLU(),
+            nn.Dropout(0.2)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+        - x: (bs, channels)
+        """
+        res = x.clone()  # (bs, channels)
+
+        x = self.block(x)  # (bs, channels)
+
+        x = x + res  # (bs, channels)
+
+        return x
 
 class CNN(nn.Module):
-    def __init__(self, input_size=64, channels=16, dropout=0.2,
+    def __init__(self, channels=16,
                  num_cnn_layers=3, num_fc_layers=2):
         super().__init__()
-        self.input_size = input_size
 
-        self.input_bn = nn.BatchNorm2d(1)
+        self.init_conv = nn.Sequential(nn.Conv2d(1, channels, kernel_size=3, stride=1, padding=1, padding_mode="circular"), nn.BatchNorm2d(channels), nn.SiLU())
 
-        # CNN residual layers
-        self.cnn_layers = nn.ModuleList()
-        for i in range(num_cnn_layers):
-            in_ch = 1 if i == 0 else channels
-            dilation = 1 if i == 0 else (i + 1)
-            self.cnn_layers.append(
-                ResidualCNN(in_ch, channels, dilation=dilation, dropout=dropout)
-            )
+        self.cnn_blocks = nn.ModuleList([
+            ResidualCNNLayer(channels) for _ in range(num_cnn_layers)
+        ])
 
         self.pool = nn.AdaptiveAvgPool2d(1)
 
-        # Fully connected residual layers
-        self.fc_layers = nn.ModuleList()
-        for _ in range(num_fc_layers):
-            self.fc_layers.append(nn.Sequential(
-                nn.Linear(channels, channels),
-                nn.LeakyReLU(),
-                nn.Dropout(dropout)
-            ))
+        self.fc_blocks = nn.ModuleList([
+            ResidualLinearLayer(channels) for _ in range(num_fc_layers)
+        ])
 
         self.out = nn.Linear(channels, 1)
 
     def forward(self, x):
-        x = self.input_bn(x)
 
-        for layer in self.cnn_layers:
+        x = self.init_conv(x)
+        
+        for layer in self.cnn_blocks:
             x = layer(x)
 
         x = self.pool(x)
         x = x.view(x.size(0), -1)
 
-        for fc in self.fc_layers:
-            identity = x
-            x = identity + fc(x)
+        for fc in self.fc_blocks:
+            x = fc(x)
 
         x = self.out(x)
 
-        if not self.training:  # clamp only in eval mode
-            x = torch.clamp(x, 0, 1)
-        return x
+        return torch.sigmoid(x)
 
 
 class GNN(nn.Module):
@@ -171,9 +182,9 @@ class GNN(nn.Module):
 
     def forward(self, data_batch):
         x, edge_index, batch = data_batch.x, data_batch.edge_index, data_batch.batch
-        x = x + F.leaky_relu(self.conv1(x, edge_index))
+        x = x + nn.SiLU()(self.conv1(x, edge_index))
         x = self.dropout(x)
-        x = x + F.leaky_relu(self.conv2(x, edge_index))
+        x = x + nn.SiLU()(self.conv2(x, edge_index))
         x = self.dropout(x)
         x = global_mean_pool(x, batch)
         return torch.sigmoid(self.fc(x))

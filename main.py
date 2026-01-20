@@ -3,9 +3,9 @@ import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from modules.architecture import CNN, fit, physics_func
-from modules.dataset import prepare_subset, prepare_datasets
-from modules.config import load_config
+from utils.architecture import CNN, fit
+from utils.dataset import prepare_subset, prepare_datasets
+from utils.config import load_config
 
 config = load_config("config.yaml")
 
@@ -21,25 +21,23 @@ h = args.h if args.h is not None else config.parameters.h
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-grids, attrs, train_idx, valid_idx = prepare_subset(
+grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(
     f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5",
-    test_size=config.dataset.test_size
+    test_size=config.dataset.test_size,
+    total_samples=1000
 )
-train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
-    grids, attrs, train_idx, valid_idx,
-    config.model.type, device,
+train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
+    grids, attrs, train_idx, valid_idx, test_idx,
+    device,
     config.dataset.batch_size,
     augment=config.dataset.augment
 )
 
-if config.model.type == "cnn":
-    model = CNN(
-        input_size=config.model.input_size,
-        channels=config.model.channels,
-        num_cnn_layers=config.model.num_cnn_layers,
-        num_fc_layers=config.model.num_fc_layers,
-        dropout=config.model.dropout
-    ).to(device)
+model = CNN(
+    channels=config.model.channels,
+    num_cnn_layers=config.model.num_cnn_layers,
+    num_fc_layers=config.model.num_fc_layers,
+).to(device)
 
 decay, no_decay = [], []
 for name, param in model.named_parameters():
@@ -62,7 +60,8 @@ else:
 
 save_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
 
+print(f"Model will be saved to: {save_path}")
 print(f"Starting training for {config.model.type.upper()}...")
-fit(config.training.epochs, model, loss_func, physics_func, optimizer,
+fit(config.training.epochs, model, loss_func, optimizer,
     train_dl, valid_dl, device, config, save_path)
 print("Training complete.")
