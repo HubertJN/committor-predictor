@@ -3,3 +3,4 @@ figures/*
 models/*
 data/*
 ising-generator/
+pytorch.sif/
