@@ -1,18 +1,12 @@
 from pathlib import Path
 import numpy as np
 
-def print_nucleation_rates(directory="data"):
-    """
-    Reads all nucleation_*.npz files in `directory`
-    and prints h, beta, and rate_per_site only.
-    """
-    directory = Path(directory)
-    files = sorted(directory.glob("nucleation_*.npz"))
+directory = Path("data")
+files = sorted(directory.glob("nucleation_*.npz"))
 
-    if not files:
-        print("No nucleation files found.")
-        return
-
+if not files:
+    print("No nucleation files found.")
+else:
     rows = []
 
     for f in files:
