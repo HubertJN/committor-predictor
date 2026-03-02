@@ -167,6 +167,28 @@ class CNN(nn.Module):
 
         return torch.sigmoid(x)
 
+class MLP(nn.Module):
+    def __init__(self, channels=8, num_fc_layers=1):
+        super().__init__()
+
+        self.init_fc = nn.Sequential(nn.Linear(2, channels),  nn.SiLU())
+
+        self.fc_blocks = nn.ModuleList([
+            ResidualLinearLayer(channels) for _ in range(num_fc_layers)
+        ])
+
+        self.out = nn.Linear(channels, 1)
+
+    def forward(self, x):
+
+        x = self.init_fc(x)
+
+        for fc in self.fc_blocks:
+            x = fc(x)
+
+        x = self.out(x)
+
+        return torch.sigmoid(x)
 
 class GNN(nn.Module):
     """
