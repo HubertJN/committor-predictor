@@ -2,8 +2,8 @@ import numpy as np
 import h5py
 import argparse
 import matplotlib.pyplot as plt
-from modules.config import load_config
-from modules.dataset import load_hdf5_raw
+from utils.config import load_config
+from utils.dataset import load_hdf5_raw
 
 # --- parse optional inputs ---
 parser = argparse.ArgumentParser()
