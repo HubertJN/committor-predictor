@@ -28,6 +28,7 @@ import torch
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from scipy.optimize import curve_fit
 from scipy.ndimage import label
 import matplotlib.gridspec as gridspec
@@ -62,6 +63,10 @@ args = parser.parse_args()
 # --- apply overrides ---
 beta = args.beta if args.beta is not None else config.parameters.beta
 h = args.h if args.h is not None else config.parameters.h
+
+# --- Plot output directory (beta/h-specific) ---
+plot_dir = Path(config.paths.plot_dir) / f"{beta:.3f}_{h:.3f}"
+plot_dir.mkdir(parents=True, exist_ok=True)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_type = config.model.type.lower()
@@ -99,29 +104,49 @@ print(f"{config.model.type.upper()} model loaded.")
 # =======================
 # --- Sigmoid Fit ---
 # =======================
-train_cluster_size = attrs[:,1][train_idx]
-train_committor = attrs[:,2][train_idx]
-train_error = attrs[:,3][train_idx]
+test_cluster_size = attrs[:, 1][test_idx]
+test_committor = attrs[:, 2][test_idx]
+test_error = attrs[:, 3][test_idx]
 
 def sigmoid(x, k, x0):
     base = 1 / (1 + np.exp(-k * (x - x0)))
     base0 = 1 / (1 + np.exp(k * x0))
     return (base - base0) / (1 - base0 + 1e-10)
 
+def sigmoid_inv(y, k, x0):
+    base0 = 1.0 / (1.0 + np.exp(k * x0))
+    denom = (1.0 - base0)
+    base = y * denom + base0
+    eps = 1e-12
+    base = np.clip(base, eps, 1.0 - eps)
+    return x0 + (1.0 / k) * np.log(base / (1.0 - base))
+
 try:
     with np.errstate(divide='ignore', invalid='ignore'):
-        popt, _ = curve_fit(sigmoid, train_cluster_size, train_committor,
-                            p0=[0.1, np.median(train_cluster_size)], maxfev=10000)
+        popt, _ = curve_fit(
+            sigmoid,
+            test_cluster_size,
+            test_committor,
+            p0=[0.1, np.median(test_cluster_size)],
+            maxfev=10000,
+        )
 except RuntimeError as e:
     print(f"Sigmoid fit failed: {e}, using default parameters")
-    popt = [0.1, np.median(train_cluster_size)]
-x_fit = np.linspace(train_cluster_size.min(), train_cluster_size.max(), 200)
+    popt = [0.1, np.median(test_cluster_size)]
+x_fit = np.linspace(test_cluster_size.min(), test_cluster_size.max(), 200)
 y_fit = sigmoid(x_fit, *popt)
 
 plt.figure(figsize=(6,6))
 plt.errorbar(
-    train_cluster_size, train_committor, yerr=train_error, 
-    fmt='o', ms=3, alpha=0.5, label="Training Data", ecolor='gray', capsize=2
+    test_cluster_size,
+    test_committor,
+    yerr=test_error,
+    fmt='o',
+    ms=3,
+    alpha=0.5,
+    label="Test Data",
+    ecolor='gray',
+    capsize=2,
 )
 plt.plot(x_fit, y_fit, color=colors['firebrick_red'], linewidth=2, label="Sigmoid Fit", zorder=10)
 #plt.vlines(7, 0, 1, linestyle="dashed", color="grey")
@@ -130,23 +155,31 @@ plt.ylabel("Target Committor")
 plt.title(f"β = {beta:.3f}, h = {h:.3f}")
 #plt.legend()
 plt.tight_layout()
-plt.xlim(-25, 800)
-plt.savefig(f"{config.paths.plot_dir}/sigmoid_cluster.pdf")
+plt.xlim(-25, np.max(test_cluster_size))
+plt.savefig(plot_dir / "sigmoid_cluster.pdf")
 plt.close()
-print(f"Saved cluster size vs committor plot with error bars to {config.paths.plot_dir}/sigmoid_cluster.pdf")
+print(f"Saved cluster size vs committor plot with error bars to {plot_dir}/sigmoid_cluster.pdf")
+
+# Print cluster that corresponds to committor ~0.5
+k_hat, x0_hat = popt
+# x corresponding to committor y = 0.5
+x_at_half = int(sigmoid_inv(0.5, k_hat, x0_hat))
+print(f"Critical cluster size at committor = 0.5: {x_at_half}")
+
+exit()
 
 # =======================
 # --- CNN Predictions ---
 # =======================
-y_train = np.array([train_ds[i][1].item() for i in range(len(train_ds))])
-y_train_err = attrs[:,3][train_idx]
+y_test = np.array([test_ds[i][1].item() for i in range(len(test_ds))])
+y_test_err = attrs[:, 3][test_idx]
 
 # Process in chunks to avoid GPU memory issues
 chunk_size = 1024
 predictions = []
-for i in range(0, len(train_ds), chunk_size):
-    end_idx = min(i + chunk_size, len(train_ds))
-    batch = torch.stack([train_ds[j][0] for j in range(i, end_idx)]).to(device)
+for i in range(0, len(test_ds), chunk_size):
+    end_idx = min(i + chunk_size, len(test_ds))
+    batch = torch.stack([test_ds[j][0] for j in range(i, end_idx)]).to(device)
     with torch.no_grad():
         batch_preds = model(batch).squeeze().cpu().numpy()
         if batch_preds.ndim == 0:
@@ -154,10 +187,20 @@ for i in range(0, len(train_ds), chunk_size):
         predictions.extend(batch_preds)
 
 predictions = np.array(predictions)
-rmse = np.sqrt(np.mean((predictions - y_train)**2))
+rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
 
 plt.figure(figsize=(6,6))
-plt.errorbar(y_train, predictions, xerr=y_train_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
+plt.errorbar(
+    y_test,
+    predictions,
+    xerr=y_test_err,
+    ms=2,
+    capsize=2,
+    alpha=0.5,
+    fmt='o',
+    ecolor='gray',
+    color=colors["steel_blue"],
+)
 plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
@@ -166,26 +209,36 @@ plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
          verticalalignment='top', horizontalalignment='left',
          bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
 plt.tight_layout()
-plt.savefig(f"{config.paths.plot_dir}/predicted_cnn.pdf")
+plt.savefig(plot_dir / "predicted_cnn.pdf")
 plt.close()
-print(f"Saved CNN prediction plot to {config.paths.plot_dir}/predicted_cnn.pdf")
+print(f"Saved CNN prediction plot to {plot_dir}/predicted_cnn.pdf")
 
 # =======================
 # --- Sigmoid Predictions with best/worst highlights ---
 # =======================
-predictions = sigmoid(attrs[train_idx][:,1], *popt)
-rmse = np.sqrt(np.mean((predictions - y_train)**2))
-errors = np.abs(predictions - y_train)
+predictions = sigmoid(attrs[test_idx][:, 1], *popt)
+rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
+errors = np.abs(predictions - y_test)
 worst_idx = np.argmax(errors)
-mask = (y_train >= 0.2) & (y_train <= 0.8)
+mask = (y_test >= 0.2) & (y_test <= 0.8)
 best_idx = np.argmin(errors[mask]) if np.any(mask) else np.argmin(errors)
-best_idx = np.arange(len(y_train))[mask][best_idx] if np.any(mask) else best_idx
+best_idx = np.arange(len(y_test))[mask][best_idx] if np.any(mask) else best_idx
 
 plt.figure(figsize=(6,6))
-plt.errorbar(y_train, predictions, xerr=y_train_err, ms=2, capsize=2, alpha=0.5, fmt='o', ecolor='gray', color=colors["steel_blue"])
+plt.errorbar(
+    y_test,
+    predictions,
+    xerr=y_test_err,
+    ms=2,
+    capsize=2,
+    alpha=0.5,
+    fmt='o',
+    ecolor='gray',
+    color=colors["steel_blue"],
+)
 plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
-plt.scatter(y_train[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors=colors['orange'], linewidths=2, label='Worst', zorder=10)
-plt.scatter(y_train[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors=colors['light_green'], linewidths=2, label='Best', zorder=10)
+plt.scatter(y_test[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors=colors['orange'], linewidths=2, label='Worst', zorder=10)
+plt.scatter(y_test[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors=colors['light_green'], linewidths=2, label='Best', zorder=10)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
 plt.title(f"β = {beta:.3f}, h = {h:.3f}")
@@ -194,16 +247,16 @@ plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
          bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
 plt.legend()
 plt.tight_layout()
-plt.savefig(f"{config.paths.plot_dir}/predicted_cluster.pdf")
+plt.savefig(plot_dir / "predicted_cluster.pdf")
 plt.close()
-print(f"Saved sigmoid prediction plot to {config.paths.plot_dir}/predicted_cluster.pdf")
+print(f"Saved sigmoid prediction plot to {plot_dir}/predicted_cluster.pdf")
 
 # =======================
 # --- Saliency Plot: Best & Worst Predictions ---
 # =======================
 
 def compute_saliency(idx):
-    x, _ = train_ds[idx]
+    x, _ = test_ds[idx]
     x_grid = x.squeeze(0).cpu().numpy()
 
     # Center largest cluster
@@ -263,10 +316,10 @@ for ax, idx, grid, saliency, title in zip(
     ax.set_title(title)
     
     # Compute predictions
-    actual = y_train[idx]
-    actual_err = attrs[train_idx][idx,3]
-    sigmoid_pred = sigmoid(attrs[train_idx][idx,1], *popt)
-    cnn_input = torch.stack([train_ds[idx][0]]).to(device)
+    actual = y_test[idx]
+    actual_err = attrs[test_idx][idx, 3]
+    sigmoid_pred = sigmoid(attrs[test_idx][idx, 1], *popt)
+    cnn_input = torch.stack([test_ds[idx][0]]).to(device)
     with torch.no_grad():
         cnn_pred = model(cnn_input).squeeze().item()
     
@@ -298,9 +351,9 @@ for ax, idx, grid, saliency, title in zip(
 # Reduce horizontal space between subplots
 plt.subplots_adjust(wspace=0.4)  # default ~0.4, smaller brings them closer
 
-plt.savefig(f"{config.paths.plot_dir}/{config.model.type}_saliency.pdf", bbox_inches="tight")
+plt.savefig(plot_dir / f"{config.model.type}_saliency.pdf", bbox_inches="tight")
 plt.close()
-print(f"Saved saliency plot (best & worst) to {config.paths.plot_dir}/{config.model.type}_saliency.pdf")
+print(f"Saved saliency plot (best & worst) to {plot_dir}/{config.model.type}_saliency.pdf")
 
 # Plot only the worst prediction
 fig, ax = plt.subplots(1, 1, figsize=(6,6))
@@ -313,10 +366,10 @@ ax.set_xticks([])
 ax.set_yticks([])
 
 # Compute predictions
-actual = y_train[worst_idx]
-actual_err = attrs[train_idx][worst_idx,3]
-sigmoid_pred = sigmoid(attrs[train_idx][worst_idx,1], *popt)
-cnn_input = torch.stack([train_ds[worst_idx][0]]).to(device)
+actual = y_test[worst_idx]
+actual_err = attrs[test_idx][worst_idx, 3]
+sigmoid_pred = sigmoid(attrs[test_idx][worst_idx, 1], *popt)
+cnn_input = torch.stack([test_ds[worst_idx][0]]).to(device)
 with torch.no_grad():
     cnn_pred = model(cnn_input).squeeze().item()
 
@@ -324,9 +377,9 @@ with torch.no_grad():
 for _, cell in the_table.get_celld().items():
     cell.set_edgecolor('none')
 
-plt.savefig(f"{config.paths.plot_dir}/{config.model.type}_worst_saliency.pdf", bbox_inches="tight")
+plt.savefig(plot_dir / f"{config.model.type}_worst_saliency.pdf", bbox_inches="tight")
 plt.close()
-print(f"Saved saliency plot (worst) to {config.paths.plot_dir}/{config.model.type}_worst_saliency.pdf")
+print(f"Saved saliency plot (worst) to {plot_dir}/{config.model.type}_worst_saliency.pdf")
 
 
 # =======================
@@ -335,8 +388,8 @@ print(f"Saved saliency plot (worst) to {config.paths.plot_dir}/{config.model.typ
 with torch.no_grad():
     diffs_trans, diffs_rot, diffs_mirror = [], [], []
 
-    for i in range(len(valid_ds)):
-        img, _ = valid_ds[i]
+    for i in range(len(test_ds)):
+        img, _ = test_ds[i]
         img = img.unsqueeze(0).to(device)
         out_orig = model(img).squeeze().item()
 
@@ -364,7 +417,7 @@ with torch.no_grad():
     TI = float(np.mean(diffs_trans))
     RI = float(np.mean(diffs_rot))
     MI = float(np.mean(diffs_mirror))
-    mean_committor_error = float(np.mean(attrs[valid_idx, 3]))
+    mean_committor_error = float(np.mean(attrs[test_idx, 3]))
 
     print(f"Mean Committor Error: {mean_committor_error:.4f}")
     print(f"Translational Invariance (TI): {TI:.4f}")
@@ -377,8 +430,8 @@ with torch.no_grad():
     selected_idx = None
 
     # --- Find first valid example ---
-    for i in range(len(valid_ds)):
-        img, _ = valid_ds[i]
+    for i in range(len(test_ds)):
+        img, _ = test_ds[i]
         x_grid = img.squeeze(0).detach().cpu().numpy()
         labeled_array, num_features = label(x_grid > 0)
         
@@ -395,7 +448,7 @@ with torch.no_grad():
     if selected_idx is None:
         raise ValueError("No grid found within the target cluster size ± tolerance.")
 
-    base_img, _ = valid_ds[selected_idx]
+    base_img, _ = test_ds[selected_idx]
 
     # Center the largest cluster
     x_grid = base_img.squeeze(0).detach().cpu().numpy()
@@ -454,9 +507,9 @@ with torch.no_grad():
         x=0.5, ha="center", y=-0.1, fontsize=25
     )
 
-    plt.savefig(f"{config.paths.plot_dir}/valid_invariance_test.pdf", bbox_inches="tight")
+    plt.savefig(plot_dir / "valid_invariance_test.pdf", bbox_inches="tight")
     plt.close()
-    print("Saved invariance test plot to valid_invariance_test.pdf")
+    print(f"Saved invariance test plot to {plot_dir}/valid_invariance_test.pdf")
 
 # 2x2 subplot
 fig, axes = plt.subplots(2, 2, figsize=(10, 10))
@@ -471,6 +524,6 @@ for ax, img, title in zip(axes.flat, images, titles):
     ax.set_aspect('equal')
 
 plt.tight_layout()
-plt.savefig(f"{config.paths.plot_dir}/invariance_2x2.pdf", bbox_inches="tight")
+plt.savefig(plot_dir / "invariance_2x2.pdf", bbox_inches="tight")
 plt.close()
-print("Saved 2x2 invariance test plot to invariance_2x2.pdf")
+print(f"Saved 2x2 invariance test plot to {plot_dir}/invariance_2x2.pdf")
