@@ -100,46 +100,47 @@ def to_cnn_dataset(grids, attrs, device="cpu", augment=False):
     return IsingDatasetCNN(data_tensor, labels_tensor, device=device, augment=augment)
 
 # ----------------- Uniform distribution filter -----------------
-def uniform_filter(labels, num_bins=10, seed=42, total_samples=100000):
+def uniform_filter(labels, num_bins=10, seed=42, total_samples=None):
     np.random.seed(seed)
     bins = np.linspace(0, 1, num_bins + 1)
-    
-    # First, determine bin sizes
-    bin_sizes = []
+
+    # Collect indices for each bin
+    bin_indices = []
     for i in range(num_bins):
-        bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
-        bin_sizes.append(len(bin_idx))
-        
-    min_bin_size = min(bin_sizes)
-    k = min(total_samples // num_bins, min_bin_size)
-    
-    num_to_take = [k] * num_bins
-    total_taken = k * num_bins
-    remaining = total_samples - total_taken
-    
-    # Remaining capacity per bin
-    remaining_capacity = [bin_sizes[i] - k for i in range(num_bins)]
-    
-    # Sort bins by remaining capacity descending to prioritize balancing
-    sorted_bins = sorted(range(num_bins), key=lambda i: remaining_capacity[i], reverse=True)
-    
-    for idx in sorted_bins:
-        if remaining <= 0:
-            break
-        can_add = min(remaining, remaining_capacity[idx])
-        num_to_take[idx] += can_add
-        remaining -= can_add
-    
-    # Now, loop through bins and pull samples
+        if i == num_bins - 1:
+            idx = np.where((labels >= bins[i]) & (labels <= bins[i + 1]))[0]
+        else:
+            idx = np.where((labels >= bins[i]) & (labels < bins[i + 1]))[0]
+        bin_indices.append(idx)
+
+    bin_sizes = [len(idx) for idx in bin_indices]
+
+    if num_bins < 3:
+        raise ValueError("Need at least 3 bins to exclude first and last bins.")
+
+    # Target count is based only on interior bins
+    k = min(bin_sizes[1:-1])
+
+    # Optional global cap
+    if total_samples is not None:
+        k = min(k, total_samples // num_bins)
+
     subset_indices = []
-    for i in range(num_bins):
-        bin_idx = np.where((labels >= bins[i]) & (labels < bins[i+1]))[0]
-        selected = np.random.choice(bin_idx, size=num_to_take[i], replace=False)
-        subset_indices.extend(selected)
+    num_taken = []
+
+    for idx in bin_indices:
+        take = min(k, len(idx))  # cap at available size
+        num_taken.append(take)
+        if take > 0:
+            selected = np.random.choice(idx, size=take, replace=False)
+            subset_indices.extend(selected)
 
     subset_indices = np.sort(subset_indices)
-    
-    print(f"Selected {len(subset_indices)} samples as uniformly as possible across {num_bins} bins")
+
+    print(
+        f"Selected {len(subset_indices)} samples; "
+        f"target per bin={k}, actual per-bin counts={num_taken}"
+    )
     return np.array(subset_indices)
 
 # ----------------- Filter zero committor -----------------
