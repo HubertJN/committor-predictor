@@ -1,14 +1,10 @@
 """Plot nucleation rates vs beta (log y-axis).
 
-This script is intended to consume the consolidated sweep output produced by
-markov_analyse.py (default: data/msm_analysis_sweep.npz).
+Reads per-run MSM outputs (msm_analysis_*.npz) and overlays brute-force
+nucleation rates (nucleation_*.npz).
 
-It plots J(beta) on a log-scale y-axis.
-
-Typical usage:
-  python plot_nucleation_rates.py --m 1024
-
-If your sweep includes multiple h values, it will plot one curve per h.
+You always get the brute-force curve(s). The only option is which MSM reaction
+coordinate(s) to show: cnn, cluster_raw, or both.
 """
 
 from __future__ import annotations
@@ -23,28 +19,9 @@ from matplotlib.lines import Line2D
 from utils.config import load_config
 
 
-# =======================
-# --- Color Palette ---
-# =======================
-colors = {
-    "steel_blue": "#1F77B4",
-    "light_steel_blue": "#AEC7E8",
-    "orange": "#FF7F0E",
-    "light_orange": "#FFBB78",
-    "forest_green": "#2CA02C",
-    "light_green": "#98DF8A",
-    "firebrick_red": "#D62728",
-    "soft_red": "#FF9896",
-    "lavender": "#9467BD",
-    "light_lavender": "#C5B0D5",
-    "gray": "#7F7F7F",
-    "light_gray": "#C7C7C7",
-    "turquoise": "#17BECF",
-    "light_turquoise": "#9EDAE5",
-}
-
-
 FONT_SIZE = 16
+MAX_H_VALUES_PER_BETA = 2
+
 plt.rcParams.update(
     {
         "font.size": FONT_SIZE,
@@ -69,6 +46,56 @@ def _asym_yerr(y: np.ndarray, low: np.ndarray, high: np.ndarray) -> np.ndarray:
     lo = np.maximum(0.0, y - low)
     hi = np.maximum(0.0, high - y)
     return np.vstack([lo, hi])
+
+
+def _beta_window_mask(beta: np.ndarray, beta_min: float | None, beta_max: float | None) -> np.ndarray:
+    beta = np.asarray(beta, dtype=float)
+    mask = np.ones(beta.shape, dtype=bool)
+    if beta_min is not None:
+        mask &= beta >= float(beta_min)
+    if beta_max is not None:
+        mask &= beta <= float(beta_max)
+    return mask
+
+
+def _top_h_pair_set(
+    beta: np.ndarray,
+    h: np.ndarray,
+    max_h_values_per_beta: int,
+) -> set[tuple[float, float]]:
+    beta = np.asarray(beta, dtype=float)
+    h = np.asarray(h, dtype=float)
+
+    if beta.size == 0 or max_h_values_per_beta <= 0:
+        return set()
+
+    allowed_pairs: set[tuple[float, float]] = set()
+    unique_beta = np.unique(beta)
+    for beta_val in unique_beta:
+        mask_b = np.isclose(beta, float(beta_val), atol=5e-4)
+        h_for_beta = np.unique(h[mask_b])
+        if h_for_beta.size == 0:
+            continue
+        highest_h = np.sort(h_for_beta)[-max_h_values_per_beta:]
+        for h_val in highest_h:
+            allowed_pairs.add((float(beta_val), float(h_val)))
+
+    return allowed_pairs
+
+
+def _pair_mask(beta: np.ndarray, h: np.ndarray, allowed_pairs: set[tuple[float, float]]) -> np.ndarray:
+    beta = np.asarray(beta, dtype=float)
+    h = np.asarray(h, dtype=float)
+
+    if beta.size == 0:
+        return np.zeros(beta.shape, dtype=bool)
+    if not allowed_pairs:
+        return np.ones(beta.shape, dtype=bool)
+
+    mask = np.zeros(beta.shape, dtype=bool)
+    for beta_val, h_val in allowed_pairs:
+        mask |= np.isclose(beta, beta_val, atol=5e-4) & np.isclose(h, h_val, atol=5e-4)
+    return mask
 
 
 def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
@@ -203,12 +230,6 @@ def _load_msm_per_run_files(msm_dir: Path) -> dict[str, np.ndarray]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--infile",
-        type=str,
-        default=None,
-        help="Legacy consolidated sweep output from markov_analyse.py (optional)",
-    )
-    parser.add_argument(
         "--msm-dir",
         type=str,
         default="data",
@@ -218,13 +239,7 @@ def main() -> None:
         "--m",
         type=int,
         default=None,
-        help="Lag m to plot. Required if infile contains multiple m values.",
-    )
-    parser.add_argument(
-        "--use",
-        choices=["central", "mean"],
-        default="central",
-        help="Which nucleation rate estimate to plot",
+        help="Lag m to plot. Required if multiple m values are present.",
     )
     parser.add_argument(
         "--out",
@@ -233,77 +248,64 @@ def main() -> None:
         help="Output filename",
     )
     parser.add_argument(
+        "--figsize",
+        type=float,
+        nargs=2,
+        default=(12.0, 5.0),
+        metavar=("W", "H"),
+        help="Figure size in inches: width height",
+    )
+    parser.add_argument(
+        "--beta-min",
+        type=float,
+        default=0.5,
+        help="Minimum beta to plot (inclusive)",
+    )
+    parser.add_argument(
+        "--beta-max",
+        type=float,
+        default=0.6,
+        help="Maximum beta to plot (inclusive)",
+    )
+    parser.add_argument(
         "--brute-dir",
         type=str,
         default=None,
-        help="Optional directory containing brute-force files named data/nucleation_{beta:.3f}_{h:.3f}.npz",
+        help="Directory containing brute-force files named nucleation_{beta:.3f}_{h:.3f}.npz. Defaults to --msm-dir.",
     )
     parser.add_argument(
         "--rc",
-        action="append",
-        choices=["cnn", "cluster", "cluster_raw"],
-        default=None,
-        help="MSM reaction-coordinate curve(s) to plot. Repeatable. Default: cnn and cluster.",
-    )
-    parser.add_argument(
-        "--all-rc",
-        action="store_true",
-        help="Plot all RCs found (cnn, cluster, cluster_raw)",
+        choices=["cnn", "cluster_raw", "both"],
+        default="both",
+        help="Which MSM reaction-coordinate curve(s) to plot",
     )
     args = parser.parse_args()
 
     config = load_config("config.yaml")
 
-    if args.infile is not None:
-        # Legacy path: single consolidated file.
-        infile = Path(args.infile)
-        if not infile.exists():
-            raise FileNotFoundError(f"Input file not found: {infile}")
-        data = np.load(str(infile))
-        beta = np.asarray(data["beta"], dtype=float)
-        h = np.asarray(data["h"], dtype=float)
-        m = np.asarray(data["m"], dtype=int)
-        rc = np.asarray(data["rc"], dtype=str) if "rc" in data else np.full(beta.shape, "cnn", dtype=str)
+    msm = _load_msm_per_run_files(Path(args.msm_dir))
+    beta = msm["beta"]
+    h = msm["h"]
+    m = msm["m"]
+    rc = msm["rc"]
 
-        J_central_all = np.asarray(data["J_central"], dtype=float)
-        J_mean_all = np.asarray(data["J_mean"], dtype=float)
-        J_std_all = np.asarray(data["J_std"], dtype=float) if "J_std" in data else None
-        J_ci_low_all = np.asarray(data["J_ci_low"], dtype=float) if "J_ci_low" in data else None
-        J_ci_high_all = np.asarray(data["J_ci_high"], dtype=float) if "J_ci_high" in data else None
-    else:
-        msm = _load_msm_per_run_files(Path(args.msm_dir))
-        beta = msm["beta"]
-        h = msm["h"]
-        m = msm["m"]
-        rc = msm["rc"]
-
-        J_central_all = msm["J_central"]
-        J_mean_all = msm["J_mean"]
-        J_std_all = msm["J_std"]
-        J_ci_low_all = msm["J_ci_low"]
-        J_ci_high_all = msm["J_ci_high"]
-
-    if args.use == "central":
-        J = np.asarray(J_central_all, dtype=float)
-        J_label = r"I MCSS$^{-1}$"
-    else:
-        J = np.asarray(J_mean_all, dtype=float)
-        J_label = r"I MCSS$^{-1}$"
-
-    J_std = np.asarray(J_std_all, dtype=float) if J_std_all is not None else None
-    J_ci_low = np.asarray(J_ci_low_all, dtype=float) if J_ci_low_all is not None else None
-    J_ci_high = np.asarray(J_ci_high_all, dtype=float) if J_ci_high_all is not None else None
+    # Prefer central estimate if present.
+    J = np.asarray(msm["J_central"], dtype=float)
+    J_label = r"I MCSS$^{-1}$"
+    J_std = np.asarray(msm["J_std"], dtype=float)
+    J_ci_low = np.asarray(msm["J_ci_low"], dtype=float)
+    J_ci_high = np.asarray(msm["J_ci_high"], dtype=float)
 
     unique_m = _unique_sorted(m)
     if args.m is None:
         if unique_m.size == 1:
             chosen_m = int(unique_m[0])
         else:
-            raise ValueError(f"Multiple m values found in infile: {unique_m.tolist()}. Provide --m.")
+            raise ValueError(f"Multiple m values found: {unique_m.tolist()}. Provide --m.")
     else:
         chosen_m = int(args.m)
         if chosen_m not in set(unique_m.tolist()):
-            raise ValueError(f"Requested m={chosen_m} not found in infile. Available m: {unique_m.tolist()}")
+            raise ValueError(f"Requested m={chosen_m} not found. Available m: {unique_m.tolist()}")
 
     mask_m = m == chosen_m
     beta = beta[mask_m]
@@ -317,23 +319,61 @@ def main() -> None:
     if J_ci_high is not None:
         J_ci_high = J_ci_high[mask_m]
 
-    unique_h = _unique_sorted(h)
+    # Optional beta window
+    mask_beta = _beta_window_mask(beta, args.beta_min, args.beta_max)
+    beta = beta[mask_beta]
+    h = h[mask_beta]
+    J = J[mask_beta]
+    rc = rc[mask_beta]
+    if J_std is not None:
+        J_std = J_std[mask_beta]
+    if J_ci_low is not None:
+        J_ci_low = J_ci_low[mask_beta]
+    if J_ci_high is not None:
+        J_ci_high = J_ci_high[mask_beta]
+
     unique_rc = _unique_sorted(rc)
 
-    if args.all_rc:
-        rc_to_plot = ["cnn", "cluster", "cluster_raw"]
-    elif args.rc is None:
-        rc_to_plot = ["cnn", "cluster"]
+    if args.rc == "both":
+        rc_to_plot = ["cnn", "cluster_raw"]
     else:
-        # Preserve user-provided order; de-duplicate.
-        rc_to_plot = []
-        for v in args.rc:
-            if v not in rc_to_plot:
-                rc_to_plot.append(v)
+        rc_to_plot = [args.rc]
 
-    brute = None
-    if args.brute_dir is not None:
-        brute = _load_brute_force_rates(Path(args.brute_dir))
+    brute_dir = Path(args.brute_dir) if args.brute_dir is not None else Path(args.msm_dir)
+    brute = _load_brute_force_rates(brute_dir)
+
+    brute_mask_beta = _beta_window_mask(brute["beta"], args.beta_min, args.beta_max)
+    for k in list(brute.keys()):
+        brute[k] = np.asarray(brute[k])[brute_mask_beta]
+    if brute["beta"].size == 0:
+        raise ValueError("No brute-force points remain after applying --beta-min/--beta-max.")
+
+    # Hardcoded filter: only keep the highest h values for each beta.
+    beta_all = np.concatenate([beta, brute["beta"]]) if beta.size > 0 else np.asarray(brute["beta"], dtype=float)
+    h_all = np.concatenate([h, brute["h"]]) if h.size > 0 else np.asarray(brute["h"], dtype=float)
+    allowed_pairs = _top_h_pair_set(beta_all, h_all, MAX_H_VALUES_PER_BETA)
+
+    mask_top_h_msm = _pair_mask(beta, h, allowed_pairs)
+    beta = beta[mask_top_h_msm]
+    h = h[mask_top_h_msm]
+    J = J[mask_top_h_msm]
+    rc = rc[mask_top_h_msm]
+    if J_std is not None:
+        J_std = J_std[mask_top_h_msm]
+    if J_ci_low is not None:
+        J_ci_low = J_ci_low[mask_top_h_msm]
+    if J_ci_high is not None:
+        J_ci_high = J_ci_high[mask_top_h_msm]
+
+    mask_top_h_brute = _pair_mask(brute["beta"], brute["h"], allowed_pairs)
+    for k in list(brute.keys()):
+        brute[k] = np.asarray(brute[k])[mask_top_h_brute]
+
+    # Plot h values present in either MSM or brute data.
+    if h.size > 0:
+        unique_h = _unique_sorted(np.concatenate([h, brute["h"]]))
+    else:
+        unique_h = _unique_sorted(brute["h"])
 
     # Output directory
     out_dir = Path(config.paths.plot_dir)
@@ -341,28 +381,19 @@ def main() -> None:
     out_path = out_dir / args.out
 
     # Plot
-    plt.figure(figsize=(9, 5))
+    fig_w, fig_h = float(args.figsize[0]), float(args.figsize[1])
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    ax = plt.gca()
 
-    palette = [
-        (colors["steel_blue"], colors["light_steel_blue"]),
-        (colors["orange"], colors["light_orange"]),
-        (colors["forest_green"], colors["light_green"]),
-        (colors["lavender"], colors["light_lavender"]),
-        (colors["firebrick_red"], colors["soft_red"]),
-        (colors["turquoise"], colors["light_turquoise"]),
-        (colors["gray"], colors["light_gray"]),
-    ]
-
+    cmap = plt.get_cmap("tab10")
     rc_style = {
         "cnn": {"fmt": "o", "linestyle": "-", "markersize": 7},
-        "cluster": {"fmt": "s", "linestyle": "--", "markersize": 6.5},
-        "cluster_raw": {"fmt": "^", "linestyle": "-.", "markersize": 6.5},
+        "cluster_raw": {"fmt": "^", "linestyle": "--", "markersize": 6.5},
     }
+    brute_annotations: list[tuple[float, float, str, tuple[float, float, float, float], int]] = []
 
     for idx, h_val in enumerate(unique_h):
-        c_main, c_line = palette[idx % len(palette)]
-
-        labeled_h = False
+        c = cmap(idx % 10)
 
         for rc_val in rc_to_plot:
             if rc_val not in set(unique_rc.tolist()):
@@ -391,8 +422,7 @@ def main() -> None:
             # MSM points + error bars
             yerr_msm = None
             if (
-                args.use == "central"
-                and J_ci_low_h is not None
+                J_ci_low_h is not None
                 and J_ci_high_h is not None
                 and np.all(np.isfinite(J_ci_low_h))
                 and np.all(np.isfinite(J_ci_high_h))
@@ -402,134 +432,184 @@ def main() -> None:
                 yerr_msm = np.where(np.isfinite(J_std_h), J_std_h, 0.0)
 
             style = rc_style.get(rc_val, {"fmt": "o", "linestyle": "-", "markersize": 7})
-            label = None
-            if unique_h.size > 1 and not labeled_h:
-                label = f"h={float(h_val):.3f}"
-                labeled_h = True
             plt.errorbar(
                 beta_h,
                 J_h,
                 yerr=yerr_msm,
                 fmt=style["fmt"],
                 markersize=style["markersize"],
-                color=c_main,
-                ecolor=c_main,
+                color=c,
+                ecolor=c,
                 elinewidth=1.2,
                 capsize=2,
                 capthick=1.0,
                 alpha=1.0,
-                label=label,
                 zorder=3,
             )
-            plt.plot(
-                beta_h,
-                J_h,
-                color=c_line,
-                linewidth=2,
-                alpha=1.0,
-                linestyle=style["linestyle"],
+
+        # Brute-force overlay for this h (always)
+        mask_b = np.isclose(brute["h"], float(h_val), atol=5e-4)
+        if np.any(mask_b):
+            beta_b = brute["beta"][mask_b]
+            J_b = brute["rate_per_site"][mask_b]
+            se_b = brute["rate_per_site_se"][mask_b]
+            cil_b = brute["rate_per_site_ci_low"][mask_b]
+            cih_b = brute["rate_per_site_ci_high"][mask_b]
+            order_b = np.argsort(beta_b)
+            beta_b = beta_b[order_b]
+            J_b = J_b[order_b]
+            se_b = se_b[order_b]
+            cil_b = cil_b[order_b]
+            cih_b = cih_b[order_b]
+
+            yerr_brute = None
+            if np.all(np.isfinite(cil_b)) and np.all(np.isfinite(cih_b)):
+                yerr_brute = _asym_yerr(J_b, cil_b, cih_b)
+            elif np.any(np.isfinite(se_b)):
+                yerr_brute = np.where(np.isfinite(se_b), se_b, 0.0)
+
+            plt.errorbar(
+                beta_b,
+                J_b,
+                yerr=yerr_brute,
+                fmt="x",
+                markersize=8,
+                color=c,
+                ecolor=c,
+                elinewidth=0.9,
+                capsize=2,
+                capthick=0.9,
+                alpha=0.45,
+                zorder=2,
             )
 
-        # Brute-force overlay for this h
-        if brute is not None:
-            mask_b = np.isclose(brute["h"], float(h_val), atol=5e-4)
-            if np.any(mask_b):
-                beta_b = brute["beta"][mask_b]
-                J_b = brute["rate_per_site"][mask_b]
-                se_b = brute["rate_per_site_se"][mask_b]
-                cil_b = brute["rate_per_site_ci_low"][mask_b]
-                cih_b = brute["rate_per_site_ci_high"][mask_b]
-                order_b = np.argsort(beta_b)
-                beta_b = beta_b[order_b]
-                J_b = J_b[order_b]
-                se_b = se_b[order_b]
-                cil_b = cil_b[order_b]
-                cih_b = cih_b[order_b]
-
-                yerr_brute = None
-                if np.all(np.isfinite(cil_b)) and np.all(np.isfinite(cih_b)):
-                    yerr_brute = _asym_yerr(J_b, cil_b, cih_b)
-                elif np.any(np.isfinite(se_b)):
-                    yerr_brute = np.where(np.isfinite(se_b), se_b, 0.0)
-
-                plt.errorbar(
-                    beta_b,
-                    J_b,
-                    yerr=yerr_brute,
-                    fmt="x",
-                    markersize=8,
-                    color=c_main,
-                    ecolor=c_line,
-                    elinewidth=0.9,
-                    capsize=2,
-                    capthick=0.9,
-                    alpha=0.55,
-                    zorder=2,
-                )
-                plt.plot(
-                    beta_b,
-                    J_b,
-                    color=c_line,
-                    linewidth=1.5,
-                    alpha=0.6,
-                    linestyle=":",
-                )
+            # Annotate each brute-force point with its field value.
+            h_text = f"h={float(h_val):.3f}"
+            for j, (xb, yb) in enumerate(zip(beta_b.tolist(), J_b.tolist())):
+                brute_annotations.append((float(xb), float(yb), h_text, c, j))
 
     plt.yscale("log")
     plt.xlabel(r"$\beta$")
-    plt.ylabel(J_label)
-    #plt.title(f"Nucleation rate vs beta")
-    show_style_legend = (brute is not None) or (len([r for r in rc_to_plot if r in set(unique_rc.tolist())]) > 1)
+    ax.margins(x=0.08, y=0.18)
 
-    if show_style_legend:
-        # Add marker-style legend entries (black) without duplicating the h-color legend.
-        style_handles: list[Line2D] = []
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    log_y_min = np.log10(y_min)
+    log_y_max = np.log10(y_max)
+    log_y_span = max(log_y_max - log_y_min, 1e-12)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    axes_bbox = ax.get_window_extent(renderer=renderer)
+    placed_label_bboxes = []
 
-        if "cnn" in set(unique_rc.tolist()) and "cnn" in rc_to_plot:
-            style_handles.append(Line2D([0], [0], color="black", marker="o", linestyle="-", linewidth=2, label="MSM (CNN)"))
-        if "cluster" in set(unique_rc.tolist()) and "cluster" in rc_to_plot:
-            style_handles.append(
-                Line2D([0], [0], color="black", marker="s", linestyle="--", linewidth=2, label="MSM (Cluster)")
-            )
-        if "cluster_raw" in set(unique_rc.tolist()) and "cluster_raw" in rc_to_plot:
-            style_handles.append(
-                Line2D([0], [0], color="black", marker="^", linestyle="-.", linewidth=2, label="MSM (Cluster raw)")
-            )
-        if brute is not None:
-            style_handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color="black",
-                    marker="x",
-                    linestyle=":",
-                    linewidth=1.5,
-                    label="Brute force",
-                )
-            )
+    for xb, yb, h_text, c, j in brute_annotations:
+        x_frac = (xb - x_min) / max(x_max - x_min, 1e-12)
+        y_frac = (np.log10(yb) - log_y_min) / log_y_span
 
-        ax = plt.gca()
-        if unique_h.size > 1:
-            hh, ll = ax.get_legend_handles_labels()
-            ax.legend(
-                handles=[*hh, *style_handles],
-                labels=[*ll, *[h.get_label() for h in style_handles]],
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
-            )
-        else:
-            ax.legend(
-                handles=style_handles,
-                loc="center left",
-                bbox_to_anchor=(1.02, 0.5),
-            )
+        place_left = x_frac > 0.82
+        place_below = y_frac > 0.82
+        if y_frac < 0.18:
+            place_below = False
 
-        plt.tight_layout()
-    elif unique_h.size > 1:
-        plt.legend()
+        preferred_dx = -6 if place_left else 6
+        preferred_dy = -10 if place_below else 6
+        if 0.18 <= y_frac <= 0.82 and j % 2 == 1:
+            preferred_dy = -10
+
+        candidate_offsets = [
+            (preferred_dx, preferred_dy),
+            (preferred_dx, -preferred_dy),
+            (-preferred_dx, preferred_dy),
+            (-preferred_dx, -preferred_dy),
+            (1.7 * preferred_dx, preferred_dy),
+            (1.7 * preferred_dx, -preferred_dy),
+            (-1.7 * preferred_dx, preferred_dy),
+            (-1.7 * preferred_dx, -preferred_dy),
+            (preferred_dx, 1.7 * preferred_dy),
+            (preferred_dx, -1.7 * preferred_dy),
+        ]
+
+        t = None
+        selected_bbox = None
+        for dx, dy in candidate_offsets:
+            candidate = ax.annotate(
+                h_text,
+                xy=(xb, yb),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                ha=("right" if dx < 0 else "left"),
+                va=("top" if dy < 0 else "bottom"),
+                color=c,
+                fontsize=FONT_SIZE * 0.85,
+                alpha=0.9,
+                annotation_clip=True,
+                clip_on=True,
+            )
+            fig.canvas.draw()
+            bbox = candidate.get_window_extent(renderer=renderer).expanded(1.08, 1.15)
+            inside_axes = (
+                bbox.x0 >= axes_bbox.x0
+                and bbox.x1 <= axes_bbox.x1
+                and bbox.y0 >= axes_bbox.y0
+                and bbox.y1 <= axes_bbox.y1
+            )
+            overlaps_existing = any(bbox.overlaps(prev_bbox) for prev_bbox in placed_label_bboxes)
+            if inside_axes and not overlaps_existing:
+                t = candidate
+                selected_bbox = bbox
+                break
+            candidate.remove()
+
+        if t is None:
+            dx, dy = candidate_offsets[0]
+            t = ax.annotate(
+                h_text,
+                xy=(xb, yb),
+                xytext=(dx, dy),
+                textcoords="offset points",
+                ha=("right" if dx < 0 else "left"),
+                va=("top" if dy < 0 else "bottom"),
+                color=c,
+                fontsize=FONT_SIZE * 0.85,
+                alpha=0.9,
+                annotation_clip=True,
+                clip_on=True,
+            )
+            fig.canvas.draw()
+            selected_bbox = t.get_window_extent(renderer=renderer).expanded(1.08, 1.15)
+
+        try:
+            t.set_underline(True)
+        except Exception:
+            pass
+        if selected_bbox is not None:
+            placed_label_bboxes.append(selected_bbox)
+
+    # Style legend (marker/linestyle meanings)
+    style_handles: list[Line2D] = []
+    if "cnn" in set(unique_rc.tolist()) and "cnn" in rc_to_plot:
+        style_handles.append(
+            Line2D([0], [0], color="black", marker="o", linestyle="None", markersize=7, label="MSM (CNN)")
+        )
+    if "cluster_raw" in set(unique_rc.tolist()) and "cluster_raw" in rc_to_plot:
+        style_handles.append(
+            Line2D(
+                [0], [0], color="black", marker="^", linestyle="None", markersize=6.5, label="MSM (Cluster)"
+            )
+        )
+    style_handles.append(
+        Line2D([0], [0], color="black", marker="x", linestyle="None", markersize=8, label="Brute force")
+    )
+
+    ax.legend(
+        handles=style_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=len(style_handles),
+    )
     plt.grid(True, which="both", alpha=0.2)
     plt.tight_layout()
-    plt.savefig(out_path)
+    plt.savefig(out_path, bbox_inches="tight")
     plt.close()
 
     print(f"Saved plot to {out_path}")
