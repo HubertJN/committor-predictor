@@ -43,6 +43,24 @@ RUNS: list[tuple[float, float]] = [
     (0.576, 0.090),
     (0.588, 0.100),
 ]
+
+RUNS: list[tuple[float, float]] = [
+    (0.511, 0.0280),
+    (0.511, 0.0580),
+    (0.526, 0.0400),
+    (0.526, 0.0700),
+    (0.538, 0.0490),
+    (0.538, 0.0820),
+    (0.550, 0.0580),
+    (0.550, 0.0930),
+    (0.564, 0.0660),
+    (0.564, 0.1050),
+    (0.576, 0.0730),
+    (0.576, 0.1160),
+    (0.588, 0.0800),
+    (0.588, 0.1280),
+]
+    
 # =======================
 # --- MANUALLY FILL SIGMOID PARAMS FOR CLUSTER RC ---
 # =======================
@@ -114,6 +132,23 @@ CLUSTER_RAW_QAB: list[tuple[float, float]] = [
     (16, 1500),
     (13, 800),
     (12, 600),
+]
+
+CLUSTER_RAW_QAB: list[tuple[float, float]] = [
+    (10, 1000),
+    (13, 400),
+    (8, 700),
+    (10, 350),
+    (7, 600),
+    (8, 300),
+    (6, 500),
+    (8, 250),
+    (5, 400),
+    (6, 200),
+    (5, 350),
+    (5, 200),
+    (4, 350),
+    (5, 150),
 ]
 
 # These globals are set inside run_one() so existing helper functions
@@ -378,7 +413,15 @@ def build_C_matrix_for_lag(m, traj_dict, model_error):
     return C_matrix
 
 
-def run_one(beta: float, h: float, config, scan_bins: int, run_scan: bool, rc: str) -> None:
+def run_one(
+    beta: float,
+    h: float,
+    config,
+    scan_bins: int,
+    run_scan: bool,
+    rc: str,
+    cluster_raw_qab: tuple[float, float] | None = None,
+) -> None:
     global device, model, q_A, q_B, q_bins, full_bins, N, S, compute_q_for_frames
 
     # ----------------- TIMING: total -----------------
@@ -432,7 +475,10 @@ def run_one(beta: float, h: float, config, scan_bins: int, run_scan: bool, rc: s
 
         compute_q_for_frames = _q_from_frames
     elif rc == "cluster_raw":
-        qA, qB = get_cluster_raw_qab(beta, h)
+        if cluster_raw_qab is not None:
+            qA, qB = cluster_raw_qab
+        else:
+            qA, qB = get_cluster_raw_qab(beta, h)
         print(f"Using raw cluster RC with (q_A, q_B)=({qA:.6g}, {qB:.6g})")
 
         def _q_from_frames(frames: np.ndarray) -> np.ndarray:
@@ -473,7 +519,10 @@ def run_one(beta: float, h: float, config, scan_bins: int, run_scan: bool, rc: s
 
     # --- RC boundaries ---
     if rc == "cluster_raw":
-        q_A, q_B = get_cluster_raw_qab(beta, h)
+        if cluster_raw_qab is not None:
+            q_A, q_B = cluster_raw_qab
+        else:
+            q_A, q_B = get_cluster_raw_qab(beta, h)
         model_error = 0.0
     else:
         q_A = 0.03
@@ -595,7 +644,27 @@ def main() -> None:
         default="cnn",
         help="Reaction coordinate used to bin the MSM: CNN committor, sigmoid(cluster_size), or raw cluster_size",
     )
+    parser.add_argument(
+        "--qA",
+        type=float,
+        default=None,
+        help="Override q_A bound for --rc cluster_raw (cluster-size units)",
+    )
+    parser.add_argument(
+        "--qB",
+        type=float,
+        default=None,
+        help="Override q_B bound for --rc cluster_raw (cluster-size units)",
+    )
     args = parser.parse_args()
+
+    cluster_raw_qab: tuple[float, float] | None = None
+    if args.qA is not None or args.qB is not None:
+        if args.qA is None or args.qB is None:
+            raise ValueError("Provide both --qA and --qB, or neither.")
+        if not (np.isfinite(args.qA) and np.isfinite(args.qB) and float(args.qA) < float(args.qB)):
+            raise ValueError(f"Invalid --qA/--qB: ({args.qA}, {args.qB}). Require finite and qA < qB.")
+        cluster_raw_qab = (float(args.qA), float(args.qB))
 
     if args.sweep:
         if not RUNS:
@@ -608,6 +677,7 @@ def main() -> None:
                 scan_bins=int(args.scan_bins),
                 run_scan=(not args.no_scan),
                 rc=str(args.rc),
+                cluster_raw_qab=cluster_raw_qab,
             )
     else:
         beta = args.beta if args.beta is not None else config.parameters.beta
@@ -619,6 +689,7 @@ def main() -> None:
             scan_bins=int(args.scan_bins),
             run_scan=(not args.no_scan),
             rc=str(args.rc),
+            cluster_raw_qab=cluster_raw_qab,
         )
 
 
