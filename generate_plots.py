@@ -155,10 +155,28 @@ plt.ylabel("Target Committor")
 plt.title(f"β = {beta:.3f}, h = {h:.3f}")
 #plt.legend()
 plt.tight_layout()
-plt.xlim(-25, np.max(test_cluster_size))
+
+# Limit x-axis based on the smallest cluster size where committor reaches 1,
+# plus a 25% margin.
+committor_one_mask = np.isclose(test_committor, 1.0, atol=1e-6) | (test_committor >= 1.0 - 1e-6)
+if np.any(committor_one_mask):
+    smallest_cluster_at_one = float(np.min(test_cluster_size[committor_one_mask]))
+    x_upper = smallest_cluster_at_one * 1.25
+else:
+    # Fallback: if committor never exactly reaches 1 in this slice, keep the full range.
+    smallest_cluster_at_one = None
+    x_upper = float(np.max(test_cluster_size))
+
+plt.xlim(-25, x_upper)
 plt.savefig(plot_dir / "sigmoid_cluster.pdf")
 plt.close()
 print(f"Saved cluster size vs committor plot with error bars to {plot_dir}/sigmoid_cluster.pdf")
+
+if smallest_cluster_at_one is not None:
+    print(
+        f"X-axis limit set using smallest cluster size with committor≈1: {smallest_cluster_at_one:.1f} "
+        f"-> x_max = {x_upper:.1f}"
+    )
 
 # Print cluster that corresponds to committor ~0.5
 k_hat, x0_hat = popt
@@ -166,7 +184,7 @@ k_hat, x0_hat = popt
 x_at_half = int(sigmoid_inv(0.5, k_hat, x0_hat))
 print(f"Critical cluster size at committor = 0.5: {x_at_half}")
 
-exit()
+#exit()
 
 # =======================
 # --- CNN Predictions ---
@@ -381,7 +399,7 @@ plt.savefig(plot_dir / f"{config.model.type}_worst_saliency.pdf", bbox_inches="t
 plt.close()
 print(f"Saved saliency plot (worst) to {plot_dir}/{config.model.type}_worst_saliency.pdf")
 
-
+exit()
 # =======================
 # --- Spatial Invariance Test ---
 # =======================
@@ -425,7 +443,7 @@ with torch.no_grad():
     print(f"Mirror Invariance (MI): {MI:.4f}")
 
     # --- Parameters ---
-    target_cluster_size = 240
+    target_cluster_size = x_at_half
     tolerance = 10
     selected_idx = None
 
