@@ -421,6 +421,8 @@ def run_one(
     run_scan: bool,
     rc: str,
     cluster_raw_qab: tuple[float, float] | None = None,
+    model_path: str | None = None,
+    c_matrix_out: str | None = None,
 ) -> None:
     global device, model, q_A, q_B, q_bins, full_bins, N, S, compute_q_for_frames
 
@@ -442,10 +444,13 @@ def run_one(
 
     if rc == "cnn":
         # --- Load trained model ---
-        checkpoint_path = (
-            f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_"
-            f"cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
-        )
+        if model_path is not None:
+            checkpoint_path = model_path
+        else:
+            checkpoint_path = (
+                f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_"
+                f"cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
+            )
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         channels = checkpoint["channels"]
         num_cnn_layers = checkpoint["num_cnn_layers"]
@@ -605,8 +610,11 @@ def run_one(
         C_m = build_C_matrix_for_lag(m, generated_trajs, model_error)
         C_dict[m] = C_m
 
-    Path("data").mkdir(parents=True, exist_ok=True)
-    out_path = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}_{rc}.npz"
+    if c_matrix_out is not None:
+        out_path = Path(c_matrix_out)
+    else:
+        out_path = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}_{rc}.npz"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(str(out_path), **{f"C_m{m}": C_dict[m] for m in m_list})
     print(f"\nSaved all C(m) matrices to {out_path}")
 
@@ -656,6 +664,18 @@ def main() -> None:
         default=None,
         help="Override q_B bound for --rc cluster_raw (cluster-size units)",
     )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Explicit path to CNN checkpoint .pth (overrides the default save_dir/{stem}.pth)",
+    )
+    parser.add_argument(
+        "--c-matrix-out",
+        type=str,
+        default=None,
+        help="Explicit output path for the C-matrix .npz (overrides data/C_matrices_...npz)",
+    )
     args = parser.parse_args()
 
     cluster_raw_qab: tuple[float, float] | None = None
@@ -690,6 +710,8 @@ def main() -> None:
             run_scan=(not args.no_scan),
             rc=str(args.rc),
             cluster_raw_qab=cluster_raw_qab,
+            model_path=args.model_path,
+            c_matrix_out=args.c_matrix_out,
         )
 
 
