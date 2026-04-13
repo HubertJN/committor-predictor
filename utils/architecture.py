@@ -83,7 +83,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
                 print(f"Checkpoint saved at epoch {epoch+1} with val_loss {val_loss:.5f}")
 
         # Periodic saving: save every N epochs if save_dir is provided
-        if save_dir and (epoch) % save_interval == 0:
+        if save_dir and ((epoch+1) % save_interval == 0 or epoch == 0):
             # Save current model
             current_model_path = save_dir / f"model_{epoch+1:04d}.pth"
             torch.save({
@@ -100,7 +100,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
             if best_model_state is not None:
                 best_model_path = save_dir / f"model_{epoch+1:04d}_best_{best_epoch+1:04d}.pth"
                 torch.save(best_model_state, best_model_path)
-                print(f"Best model saved to {best_model_path} (from epoch {best_epoch+1})")
+                print(f"Best model saved to {best_model_path}")
 
         epoch_time = time.perf_counter() - epoch_start
         print(f"Epoch {epoch+1:{width}}/{epochs:{width}} - "
