@@ -3,6 +3,7 @@ import argparse
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from pathlib import Path
 from utils.architecture import CNN, fit
 from utils.dataset import prepare_subset, prepare_datasets
 from utils.config import load_config
@@ -13,6 +14,7 @@ config = load_config("config.yaml")
 parser = argparse.ArgumentParser()
 parser.add_argument("--beta", type=float, help="Override beta value")
 parser.add_argument("--h", type=float, help="Override h value")
+parser.add_argument("--save-interval", type=int, default=10, help="Save every N epochs")
 args = parser.parse_args()
 
 # --- apply overrides ---
@@ -58,10 +60,20 @@ elif config.training.loss.lower() == "mse":
 else:
     raise ValueError(f"Unsupported loss: {config.training.loss}")
 
-save_path = f"{config.paths.save_dir}/{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_{beta:.3f}_{h:.3f}.pth"
+# Create models directory with beta_h subdirectory
+save_dir = Path(f"models/{beta:.3f}_{h:.3f}")
+save_dir.mkdir(parents=True, exist_ok=True)
 
+save_path = (
+    f"{config.paths.save_dir}/"
+    f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
+    f"{beta:.3f}_{h:.3f}.pth"
+)
+
+print(f"Periodic checkpoints will be saved to: {save_dir}")
 print(f"Model will be saved to: {save_path}")
 print(f"Starting training for {config.model.type.upper()}...")
 fit(config.training.epochs, model, loss_func, optimizer,
-    train_dl, valid_dl, device, config, save_path)
+    train_dl, valid_dl, device, config, save_path=save_path, 
+    save_dir=str(save_dir), save_interval=args.save_interval)
 print("Training complete.")

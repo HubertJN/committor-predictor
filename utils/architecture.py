@@ -3,6 +3,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
+from pathlib import Path
 from torch_geometric.nn import GCNConv, global_mean_pool
 
 def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
@@ -23,14 +24,21 @@ def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
         opt.zero_grad()
     return loss.item(), len(xb)
 
-def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None):
+def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None, save_dir=None, save_interval=10):
     spin_up = torch.full([64, 64], 1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
     spin_down = torch.full([64, 64], -1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
 
     width = max(4, len(str(epochs)))  # determine width for epoch numbers
 
+    # Create save directory if provided
+    if save_dir:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
     total_start = time.perf_counter()
     best_val_loss = float('inf')
+    best_model_state = None
+    best_epoch = -1
 
     for epoch in range(epochs):
         epoch_start = time.perf_counter()
@@ -56,24 +64,49 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
             val_vals, val_counts = zip(*val_losses)
             val_loss = np.sum(np.multiply(val_vals, val_counts)) / np.sum(val_counts)
 
-        # Checkpointing: save best model
-        if save_path and config and val_loss < best_val_loss:
+        # Track best model
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'channels': config.model.channels,
-                'num_cnn_layers': config.model.num_cnn_layers,
-                'num_fc_layers': config.model.num_fc_layers,
+            best_model_state = {
+                'model_state_dict': model.state_dict().copy(),
+                'channels': config.model.channels if config else None,
+                'num_cnn_layers': config.model.num_cnn_layers if config else None,
+                'num_fc_layers': config.model.num_fc_layers if config else None,
                 'epoch': epoch,
                 'val_loss': val_loss
-            }, save_path)
-            print(f"Checkpoint saved at epoch {epoch+1} with val_loss {val_loss:.5f}")
+            }
+            best_epoch = epoch
+            
+            # Checkpointing: save best model (legacy support)
+            if save_path and config:
+                torch.save(best_model_state, save_path)
+                print(f"Checkpoint saved at epoch {epoch+1} with val_loss {val_loss:.5f}")
+
+        # Periodic saving: save every N epochs if save_dir is provided
+        if save_dir and (epoch) % save_interval == 0:
+            # Save current model
+            current_model_path = save_dir / f"model_epoch_{epoch+1:04d}.pth"
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'channels': config.model.channels if config else None,
+                'num_cnn_layers': config.model.num_cnn_layers if config else None,
+                'num_fc_layers': config.model.num_fc_layers if config else None,
+                'epoch': epoch + 1,
+                'val_loss': val_loss
+            }, current_model_path)
+            print(f"Current model saved to {current_model_path}")
+            
+            # Save best model if we have found one
+            if best_model_state is not None:
+                best_model_path = save_dir / f"model_best_{best_epoch+1:04d}.pth"
+                torch.save(best_model_state, best_model_path)
+                print(f"Best model saved to {best_model_path} (from epoch {best_epoch+1})")
 
         epoch_time = time.perf_counter() - epoch_start
         print(f"Epoch {epoch+1:{width}}/{epochs:{width}} - "
               f"Train Loss: {train_loss:.5f} - Validation Loss: {val_loss:.5f} - "
               f"Time: {epoch_time:.2f}s")
-
+        
     total_time = time.perf_counter() - total_start
     print(f"Total training time: {total_time:.2f}s")
 
