@@ -496,7 +496,6 @@ def run_one(
     # Load attributes
     _, attrs_all, _ = load_hdf5_raw(h5path, load_grids=False)
 
-
     # Apply uniform filter to select samples.
     # For CNN MSMs, we balance across committor labels in [0,1].
     # For cluster-based MSMs, we balance across cluster sizes (not restricted to [0,1]).
@@ -509,20 +508,6 @@ def run_one(
     grids_main, _, _ = load_hdf5_raw(h5path, indices=subset_indices)
     print(f"Selected {len(grids_main)} grids uniformly across committor bins")
 
-    # Compute reaction coordinate values for *all* frames
-    if rc == "cnn":
-        q_main = compute_committors_for_trajectory(grids_main, model, device)
-    elif rc == "cluster":
-        # attrs_all[:,1] is largest cluster size; subset_indices indexes into attrs_all
-        cluster_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
-        k, x0 = get_cluster_sigmoid_params(beta, h)
-        q_main = sigmoid(cluster_main, k, x0)
-        q_main = np.clip(q_main, 0.0, 1.0)
-    else:  # cluster_raw
-        q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
-
-    print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-
     # --- RC boundaries ---
     if rc == "cluster_raw":
         if cluster_raw_qab is not None:
@@ -534,6 +519,22 @@ def run_one(
         q_A = 0.02
         q_B = 0.98
         model_error = 0.015
+
+    # Compute reaction coordinate values for *all* frames
+    if rc == "cnn":
+        q_main = compute_committors_for_trajectory(grids_main, model, device)
+        q_main[attrs_all[subset_indices, 2] < q_A] = attrs_all[subset_indices, 2][attrs_all[subset_indices, 2] < q_A]
+        q_main[attrs_all[subset_indices, 2] > q_B] = attrs_all[subset_indices, 2][attrs_all[subset_indices, 2] > q_B]
+    elif rc == "cluster":
+        # attrs_all[:,1] is largest cluster size; subset_indices indexes into attrs_all
+        cluster_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
+        k, x0 = get_cluster_sigmoid_params(beta, h)
+        q_main = sigmoid(cluster_main, k, x0)
+        q_main = np.clip(q_main, 0.0, 1.0)
+    else:  # cluster_raw
+        q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
+
+    print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
 
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)

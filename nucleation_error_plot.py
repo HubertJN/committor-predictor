@@ -142,29 +142,20 @@ if not results:
 val_losses = np.array([r["val_loss"]     for r in results])
 J_msm_arr  = np.array([r["J_msm"]        for r in results])
 residuals  = np.abs(J_msm_arr - J_brute) / np.abs(J_brute)
-snap_idxs  = [r["snapshot_idx"] for r in results]
+snap_idxs  = np.array([r["snapshot_idx"] for r in results])
 
 fig, ax = plt.subplots(figsize=(7, 5))
 
-ax.scatter(val_losses, residuals, zorder=3, color="steelblue", s=60, label="CNN snapshot")
-
-# Label each point with its snapshot index
-#for vl, res, idx in zip(val_losses, residuals, snap_idxs):
-#    ax.annotate(f"s{idx}", (vl, res), textcoords="offset points",
-#                xytext=(5, 4), fontsize=8, color="steelblue")
+ax.scatter(snap_idxs, residuals, zorder=3, color="steelblue", s=60, label="CNN snapshot")
 
 # Reference line at 0 residual
 ax.axhline(0, color="grey", linewidth=0.8, linestyle="--")
 
-# x-axis: high → low (worst model on left, best on right)
-ax.invert_xaxis()
-
-ax.set_xlabel("Validation Loss", fontsize=12)
+ax.set_xlabel("Epoch", fontsize=12)
 ax.set_ylabel("Percentage Residual to Brute-Force Rate", fontsize=12)
 #ax.legend(fontsize=10)
 ax.grid(True, alpha=0.3)
-plt.yscale("log")
-plt.xscale("log")
+#plt.yscale("log")
 
 out_path = Path(args.out)
 out_path.parent.mkdir(parents=True, exist_ok=True)
