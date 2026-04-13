@@ -85,7 +85,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         # Periodic saving: save every N epochs if save_dir is provided
         if save_dir and (epoch) % save_interval == 0:
             # Save current model
-            current_model_path = save_dir / f"model_epoch_{epoch+1:04d}.pth"
+            current_model_path = save_dir / f"model_{epoch+1:04d}.pth"
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'channels': config.model.channels if config else None,
@@ -98,7 +98,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
             
             # Save best model if we have found one
             if best_model_state is not None:
-                best_model_path = save_dir / f"model_best_{best_epoch+1:04d}.pth"
+                best_model_path = save_dir / f"model_{epoch+1:04d}_best_{best_epoch+1:04d}.pth"
                 torch.save(best_model_state, best_model_path)
                 print(f"Best model saved to {best_model_path} (from epoch {best_epoch+1})")
 
