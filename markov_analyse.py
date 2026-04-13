@@ -44,13 +44,16 @@ RUNS: list[tuple[float, float]] = [
     (0.588, 0.128),
 ]
 
-def load_count_matrices(beta: float, h: float, rc: str) -> tuple[list[int], dict[int, np.ndarray]]:
-    data_path = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}_{rc}.npz"
-    # Backward-compatible fallback for older CNN-only runs
-    if not data_path.exists() and rc == "cnn":
-        legacy = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}.npz"
-        if legacy.exists():
-            data_path = legacy
+def load_count_matrices(beta: float, h: float, rc: str, c_matrix_in: str | None = None) -> tuple[list[int], dict[int, np.ndarray]]:
+    if c_matrix_in is not None:
+        data_path = Path(c_matrix_in)
+    else:
+        data_path = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}_{rc}.npz"
+        # Backward-compatible fallback for older CNN-only runs
+        if not data_path.exists() and rc == "cnn":
+            legacy = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}.npz"
+            if legacy.exists():
+                data_path = legacy
 
     if not data_path.exists():
         raise FileNotFoundError(f"Missing count-matrix file: {data_path}")
@@ -229,8 +232,9 @@ def bootstrap_J_AB_from_counts(C,
     return stats
 
 
-def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | None, verbose: bool) -> list[dict]:
-    m_list, C_dict = load_count_matrices(beta, h, rc=rc)
+def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | None, verbose: bool,
+                c_matrix_in: str | None = None) -> list[dict]:
+    m_list, C_dict = load_count_matrices(beta, h, rc=rc, c_matrix_in=c_matrix_in)
     T_dict = counts_to_transition_matrices(m_list, C_dict)
 
     if verbose:
@@ -394,6 +398,18 @@ def main() -> None:
         help="Directory to write per-run MSM analysis files",
     )
     parser.add_argument(
+        "--c-matrix-in",
+        type=str,
+        default=None,
+        help="Explicit path to C-matrix .npz input (overrides data/C_matrices_...npz)",
+    )
+    parser.add_argument(
+        "--msm-out",
+        type=str,
+        default=None,
+        help="Explicit output path for the MSM analysis .npz (overrides --out-dir default)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-lag diagnostics (noisy for sweeps)",
@@ -446,8 +462,12 @@ def main() -> None:
                 n_boot=int(args.n_boot),
                 rng_seed=int(args.seed),
                 verbose=True,
+                c_matrix_in=args.c_matrix_in,
             )
-            out_path = per_run_out_path(out_dir, float(beta), float(h), str(rc))
+            if args.msm_out is not None:
+                out_path = Path(args.msm_out)
+            else:
+                out_path = per_run_out_path(out_dir, float(beta), float(h), str(rc))
             save_records_npz(recs, out_path)
             print(f"Saved per-run results to {out_path}")
 
