@@ -39,6 +39,11 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
     best_val_loss = float('inf')
     best_model_state = None
     best_epoch = -1
+    
+    # Track losses for saving
+    train_loss_history = []
+    val_loss_history = []
+    epochs_list = []
 
     for epoch in range(epochs):
         epoch_start = time.perf_counter()
@@ -107,8 +112,24 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
               f"Train Loss: {train_loss:.5f} - Validation Loss: {val_loss:.5f} - "
               f"Time: {epoch_time:.2f}s")
         
+        # Track losses for later saving
+        train_loss_history.append(train_loss)
+        val_loss_history.append(val_loss)
+        epochs_list.append(epoch + 1)
+        
     total_time = time.perf_counter() - total_start
     print(f"Total training time: {total_time:.2f}s")
+    
+    # Save loss history if save_dir is provided
+    if save_dir:
+        loss_path = save_dir / "loss_history.npz"
+        np.savez(
+            str(loss_path),
+            epochs=np.array(epochs_list),
+            train_loss=np.array(train_loss_history),
+            val_loss=np.array(val_loss_history)
+        )
+        print(f"Loss history saved to {loss_path}")
 
 class ResidualCNNLayer(nn.Module):
     def __init__(self, channels: int):
