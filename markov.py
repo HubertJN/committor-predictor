@@ -496,6 +496,7 @@ def run_one(
     # Load attributes
     _, attrs_all, _ = load_hdf5_raw(h5path, load_grids=False)
 
+
     # Apply uniform filter to select samples.
     # For CNN MSMs, we balance across committor labels in [0,1].
     # For cluster-based MSMs, we balance across cluster sizes (not restricted to [0,1]).
@@ -530,8 +531,8 @@ def run_one(
             q_A, q_B = get_cluster_raw_qab(beta, h)
         model_error = 0.0
     else:
-        q_A = 0.03
-        q_B = 0.97
+        q_A = 0.02
+        q_B = 0.98
         model_error = 0.015
 
     num_steps = 12
