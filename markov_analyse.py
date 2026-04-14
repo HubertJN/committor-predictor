@@ -2,47 +2,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import argparse
 from utils.config import load_config
-import math
 from pathlib import Path
 
 np.set_printoptions(linewidth=np.inf)
 
-
-# =======================
-# --- MANUALLY FILL RUNS FOR SWEEP ---
-# =======================
-# Enable with: python markov_analyse.py --sweep
-# Example:
-# RUNS = [
-#     (0.511, 0.040),
-#     (0.526, 0.050),
-# ]
-RUNS: list[tuple[float, float]] = [
-    (0.474, 0.010),
-    (0.486, 0.020),
-    (0.498, 0.030),
-    (0.511, 0.028),
-    (0.511, 0.040),
-    (0.511, 0.058),
-    (0.526, 0.040),
-    (0.526, 0.050),
-    (0.526, 0.070),
-    (0.538, 0.049),
-    (0.538, 0.060),
-    (0.538, 0.082),
-    (0.550, 0.058),
-    (0.550, 0.070),
-    (0.550, 0.093),
-    (0.564, 0.066),
-    (0.564, 0.080),
-    (0.564, 0.105),
-    (0.576, 0.073),
-    (0.576, 0.090),
-    (0.576, 0.116),
-    (0.588, 0.080),
-    (0.588, 0.100),
-    (0.588, 0.128),
-]
 
 def load_count_matrices(beta: float, h: float, rc: str, c_matrix_in: str | None = None) -> tuple[list[int], dict[int, np.ndarray]]:
     if c_matrix_in is not None:
@@ -74,9 +37,6 @@ def counts_to_transition_matrices(m_list: list[int], C_dict: dict[int, np.ndarra
         T_dict[m] = T
     return T_dict
 
-# ============================
-# Helper Functions
-# ============================
 
 def stochasticity_checks(T):
     row_sums = T.sum(axis=1)
@@ -277,13 +237,14 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             print("Eigenvalues:", eigvals[:5])
             print(f"Locality (±1 bin): {loc:.4f}")
 
-            exp = math.floor(math.log10(abs(J_central))) if J_central != 0 else 0
+            exp = int(np.floor(np.log10(abs(J_central)))) if J_central != 0 else 0
             coeff_central = J_central / (10**exp) if J_central != 0 else 0
             coeff_std = J_std / (10**exp) if J_central != 0 else 0
             coeff_low = float(J_low) / (10**exp) if J_central != 0 else 0
             coeff_high = float(J_high) / (10**exp) if J_central != 0 else 0
-            print(f"Nucleation rate: ({coeff_central:.3f} +/- {coeff_std:.3f})e{exp}")
-            print(f"95% CI: [{coeff_low:.3f}e{exp}, {coeff_high:.3f}e{exp}]")
+            exp_str = f"e{exp}"
+            print(f"Nucleation rate: ({coeff_central:.3f} +/- {coeff_std:.3f}){exp_str}")
+            print(f"95% CI: [{coeff_low:.3f}{exp_str}, {coeff_high:.3f}{exp_str}]")
 
         record = {
             "beta": float(beta),
@@ -374,20 +335,10 @@ def main() -> None:
     parser.add_argument("--beta", type=float, help="Override beta value")
     parser.add_argument("--h", type=float, help="Override h value")
     parser.add_argument(
-        "--sweep",
-        action="store_true",
-        help="Run over all (beta, h) pairs in RUNS (manually filled in markov_analyse.py)",
-    )
-    parser.add_argument(
-        "--everything",
-        action="store_true",
-        help="Convenience flag: equivalent to --sweep --rc all",
-    )
-    parser.add_argument(
         "--rc",
-        choices=["cnn", "cluster", "cluster_raw", "both", "all"],
+        choices=["cnn", "lcs"],
         default="cnn",
-        help="Which reaction-coordinate version(s) to analyse",
+        help="Reaction coordinate: CNN committor or largest cluster size",
     )
     parser.add_argument("--n-boot", type=int, default=500, help="Bootstrap samples per (beta,h,m)")
     parser.add_argument("--seed", type=int, default=12345, help="RNG seed for bootstrap")
@@ -412,64 +363,29 @@ def main() -> None:
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Print per-lag diagnostics (noisy for sweeps)",
+        help="Print per-lag diagnostics",
     )
     args = parser.parse_args()
 
-    if args.everything:
-        args.sweep = True
-        args.rc = "all"
-
+    beta = args.beta if args.beta is not None else config.parameters.beta
+    h = args.h if args.h is not None else config.parameters.h
     out_dir = Path(args.out_dir)
-    if args.rc == "both":
-        rc_list = ["cnn", "cluster"]
-    elif args.rc == "all":
-        rc_list = ["cnn", "cluster", "cluster_raw"]
-    else:
-        rc_list = [str(args.rc)]
 
-    if args.sweep:
-        if not RUNS:
-            raise ValueError("RUNS is empty. Fill RUNS in markov_analyse.py or run without --sweep.")
-        for beta, h in RUNS:
-            for rc in rc_list:
-                try:
-                    print("\n" + "=" * 80)
-                    print(f"Analysing beta={beta:.3f}, h={h:.3f}, rc={rc}")
-                    print("=" * 80)
-                    recs = analyse_one(
-                        beta=float(beta),
-                        h=float(h),
-                        rc=str(rc),
-                        n_boot=int(args.n_boot),
-                        rng_seed=int(args.seed),
-                        verbose=bool(args.verbose),
-                    )
-                    out_path = per_run_out_path(out_dir, float(beta), float(h), str(rc))
-                    save_records_npz(recs, out_path)
-                    print(f"Saved per-run results to {out_path}")
-                except FileNotFoundError as e:
-                    print(str(e))
-                    continue
+    recs = analyse_one(
+        beta=float(beta),
+        h=float(h),
+        rc=str(args.rc),
+        n_boot=int(args.n_boot),
+        rng_seed=int(args.seed),
+        verbose=True,
+        c_matrix_in=args.c_matrix_in,
+    )
+    if args.msm_out is not None:
+        out_path = Path(args.msm_out)
     else:
-        beta = args.beta if args.beta is not None else config.parameters.beta
-        h = args.h if args.h is not None else config.parameters.h
-        for rc in rc_list:
-            recs = analyse_one(
-                beta=float(beta),
-                h=float(h),
-                rc=str(rc),
-                n_boot=int(args.n_boot),
-                rng_seed=int(args.seed),
-                verbose=True,
-                c_matrix_in=args.c_matrix_in,
-            )
-            if args.msm_out is not None:
-                out_path = Path(args.msm_out)
-            else:
-                out_path = per_run_out_path(out_dir, float(beta), float(h), str(rc))
-            save_records_npz(recs, out_path)
-            print(f"Saved per-run results to {out_path}")
+        out_path = per_run_out_path(out_dir, float(beta), float(h), str(args.rc))
+    save_records_npz(recs, out_path)
+    print(f"Saved per-run results to {out_path}")
 
 
 if __name__ == "__main__":
