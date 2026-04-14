@@ -236,17 +236,22 @@ def run_one(
     print(f"Selected {len(grids_main)} grids uniformly across committor bins")
 
     if rc == "cnn":
-        q_A = 0.02
-        q_B = 0.98
+        A_mask = attrs_all[subset_indices, 2] <= 0.01
+        B_mask = attrs_all[subset_indices, 2] >= 0.99
+
+        q_A_ref = compute_committors_for_trajectory(grids_main[A_mask], model, device)
+        q_B_ref = compute_committors_for_trajectory(grids_main[B_mask], model, device)
+
+        q_A = float(np.quantile(q_A_ref, 0.95))
+        q_B = float(np.quantile(q_B_ref, 0.05))
+        print(f"Determined q_A={q_A:.6f} from A states, q_B={q_B:.6f} from B states")
         q_main = compute_committors_for_trajectory(grids_main, model, device)
-        q_main[attrs_all[subset_indices, 2] < q_A] = attrs_all[subset_indices, 2][attrs_all[subset_indices, 2] < q_A]
-        q_main[attrs_all[subset_indices, 2] > q_B] = attrs_all[subset_indices, 2][attrs_all[subset_indices, 2] > q_B]
     else:
         q_A, q_B = lcs_qab
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-
+    exit()
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
