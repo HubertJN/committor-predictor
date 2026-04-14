@@ -197,7 +197,7 @@ def main() -> None:
         up_threshold=int(args.up_threshold),
         keep_grids=False,
         gpu_method=int(args.gpu_method),
-        outname=f"data/gridstates_{beta:.3f}_{h:.3f}.hdf5",
+        outname="None",
     )
     frac = np.asarray(frac, dtype=float)
 
