@@ -489,6 +489,7 @@ def main() -> None:
                 brute_annotations.append((float(xb), float(yb), h_text, c, j))
 
     plt.yscale("log")
+    plt.ylabel(r"I MCSS$^{-1}$")
     plt.xlabel(r"$\beta$")
     ax.margins(x=0.08, y=0.18)
 
