@@ -1,25 +1,6 @@
-"""Plot a simple error-band metric vs beta.
-
-Metric definition:
-- For each (beta, h) run, compute CNN predictions on the TEST set.
-- Count points that fall outside a +/- X% band around the x=y line in the
-  (target=x, prediction=y) plot.
-
-By default, the band is defined relative to the prediction y:
-    |y - x| > (X/100) * max(|y|, eps)
-
-This matches "beyond 2.5% of the prediction".
-
-You can switch to an absolute band (fixed in committor units) via --mode absolute:
-    |y - x| > (X/100)
-
-Fill in RUNS below with the datasets/models you want to evaluate.
-"""
-
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -32,9 +13,6 @@ from utils.dataset import prepare_subset, prepare_datasets
 from utils.config import load_config
 
 
-# =======================
-# --- Color Palette ---
-# =======================
 colors = {
     "steel_blue": "#1F77B4",
     "light_steel_blue": "#AEC7E8",
@@ -59,9 +37,6 @@ colors = {
 }
 
 
-# =======================
-# --- Plotting Parameters ---
-# =======================
 FONT_SIZE = 16
 plt.rcParams.update(
     {
@@ -76,31 +51,24 @@ plt.rcParams.update(
 )
 
 
-@dataclass(frozen=True)
-class RunSpec:
-    beta: float
-    h: float
+RUNS = [
+    (0.511, 0.040),
+    (0.526, 0.050),
+    (0.538, 0.060),
+    (0.550, 0.070),
+    (0.564, 0.080),
+    (0.576, 0.090),
+    (0.588, 0.100),
+]
 
-
-# =======================
-# --- MANUALLY FILL THESE RUNS ---
-# =======================
-# Example:
-# RUNS = [
-#     RunSpec(beta=0.511, h=0.040),
-#     RunSpec(beta=0.526, h=0.050),
-# ]
-RUNS: list[RunSpec] = [
-    RunSpec(beta=0.474, h=0.010),
-    RunSpec(beta=0.486, h=0.020),
-    RunSpec(beta=0.498, h=0.030),
-    RunSpec(beta=0.511, h=0.040),
-    RunSpec(beta=0.526, h=0.050),
-    RunSpec(beta=0.538, h=0.060),
-    RunSpec(beta=0.550, h=0.070),
-    RunSpec(beta=0.564, h=0.080),
-    RunSpec(beta=0.576, h=0.090),
-    RunSpec(beta=0.588, h=0.100),
+RUNS_NEW = [
+    (0.511, 0.0580),
+    (0.526, 0.0700),
+    (0.538, 0.0820),
+    (0.550, 0.0930),
+    (0.564, 0.1050),
+    (0.576, 0.1160),
+    (0.588, 0.1280),
 ]
 
 
@@ -191,10 +159,14 @@ def main() -> None:
     fractions_cnn: list[float] = []
     fractions_cluster: list[float] = []
     betas: list[float] = []
+    
+    fractions_cnn_new: list[float] = []
+    fractions_cluster_new: list[float] = []
+    betas_new: list[float] = []
 
     for run in RUNS:
-        beta = float(run.beta)
-        h = float(run.h)
+        beta = float(run[0])
+        h = float(run[1])
 
         # Dataset (uses the same naming convention as generate_plots.py)
         h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
@@ -246,6 +218,60 @@ def main() -> None:
         fractions_cnn.append(frac_cnn)
         fractions_cluster.append(frac_cluster)
 
+    for run in RUNS_NEW:
+        beta = float(run[0])
+        h = float(run[1])
+
+        # Dataset (uses the same naming convention as generate_plots.py)
+        h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+        print(f"Loading dataset from {h5path}...")
+
+        grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
+        _, _, _, _, _, test_ds = prepare_datasets(
+            grids,
+            attrs,
+            train_idx,
+            valid_idx,
+            test_idx,
+            device,
+            config.dataset.batch_size,
+            augment=False,
+        )
+
+        # Model checkpoint (uses the same naming convention as generate_plots.py)
+        checkpoint_path = (
+            f"{config.paths.save_dir}/"
+            f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
+            f"{beta:.3f}_{h:.3f}.pth"
+        )
+        print(f"Loading model from {checkpoint_path}...")
+        model = _load_model_from_checkpoint(checkpoint_path, device=device)
+
+        # Targets and predictions on TEST
+        y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
+        y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
+
+        # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
+        test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
+        k, x0 = fit_sigmoid(test_cluster_size, y_true)
+        y_pred_cluster = sigmoid(test_cluster_size, k, x0)
+
+        frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
+        frac_cluster = fraction_outside_band(
+            y_true=y_true,
+            y_pred=y_pred_cluster,
+            percent=float(args.percent),
+            mode=str(args.mode),
+        )
+        print(
+            f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
+            f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+        )
+
+        betas_new.append(beta)
+        fractions_cnn_new.append(frac_cnn)
+        fractions_cluster_new.append(frac_cluster)
+    
     # Plot
     out_dir = Path(config.paths.plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -256,13 +282,25 @@ def main() -> None:
     betas_sorted = np.asarray(betas, dtype=float)[order]
     cnn_sorted = np.asarray(fractions_cnn, dtype=float)[order]
     cluster_sorted = np.asarray(fractions_cluster, dtype=float)[order]
+    
+    order_new = np.argsort(np.asarray(betas_new, dtype=float))
+    betas_sorted_new = np.asarray(betas_new, dtype=float)[order_new]
+    cnn_sorted_new = np.asarray(fractions_cnn_new, dtype=float)[order_new]
+    cluster_sorted_new = np.asarray(fractions_cluster_new, dtype=float)[order_new]
 
     plt.figure(figsize=(7, 5))
-    plt.scatter(betas_sorted, cluster_sorted, s=60, color=colors["orange"], alpha=0.9, label="Cluster")
+    
+    # Original runs
+    plt.scatter(betas_sorted, cluster_sorted, s=60, color=colors["orange"], alpha=0.9, label="Cluster (Low)")
     plt.plot(betas_sorted, cluster_sorted, color=colors["light_orange"], linewidth=2, alpha=0.8)
-
-    plt.scatter(betas_sorted, cnn_sorted, s=60, color=colors["steel_blue"], alpha=0.9, label="CNN")
+    plt.scatter(betas_sorted, cnn_sorted, s=60, color=colors["steel_blue"], alpha=0.9, label="CNN (Low)")
     plt.plot(betas_sorted, cnn_sorted, color=colors["light_steel_blue"], linewidth=2, alpha=0.8)
+    
+    # New runs
+    plt.scatter(betas_sorted_new, cluster_sorted_new, s=60, color=colors["orange"], marker="s", alpha=0.6, label="Cluster (High)")
+    plt.plot(betas_sorted_new, cluster_sorted_new, color=colors["light_orange"], linewidth=2, alpha=0.5, linestyle="--")
+    plt.scatter(betas_sorted_new, cnn_sorted_new, s=60, color=colors["steel_blue"], marker="s", alpha=0.6, label="CNN (High)")
+    plt.plot(betas_sorted_new, cnn_sorted_new, color=colors["light_steel_blue"], linewidth=2, alpha=0.5, linestyle="--")
 
     plt.xlabel(r"$\beta$")
     plt.ylabel(f"Fraction outside ±{args.percent}% band")
