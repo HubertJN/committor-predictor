@@ -26,8 +26,8 @@ from utils.config import load_config
 parser = argparse.ArgumentParser()
 parser.add_argument("--beta",    type=float, help="Override beta (default: from config)")
 parser.add_argument("--h",       type=float, help="Override h    (default: from config)")
-parser.add_argument("--out",     type=str,   default="figures/nucleation_error.pdf",
-                    help="Output figure path")
+parser.add_argument("--out",     type=str,   default=None,
+                    help="Output figure path (default: figures/nucleation_error_{beta}_{h}.pdf)")
 parser.add_argument("--no-markov", action="store_true",
                     help="Skip running markov.py / markov_analyse.py and use already-saved results")
 args = parser.parse_args()
@@ -35,6 +35,9 @@ args = parser.parse_args()
 config = load_config("config.yaml")
 beta = args.beta if args.beta is not None else float(config.parameters.beta)
 h    = args.h    if args.h    is not None else float(config.parameters.h)
+
+if args.out is None:
+    args.out = f"figures/nucleation_error_{beta:.3f}_{h:.3f}.pdf"
 
 # ---------------------------------------------------------------------------
 # Locate snapshots
