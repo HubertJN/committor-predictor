@@ -251,7 +251,7 @@ def run_one(
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-    exit()
+
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
