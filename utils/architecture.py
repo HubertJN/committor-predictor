@@ -6,17 +6,9 @@ import numpy as np
 from pathlib import Path
 from torch_geometric.nn import GCNConv, global_mean_pool
 
-def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
-    xb_all = torch.cat([xb, spin_up, spin_down], dim=0)
-    pred_all = model(xb_all)
-
-    n = xb.shape[0]
-    pred_data = pred_all[:n]
-    pred_phys = pred_all[n:]
-
+def loss_batch(model, loss_func, xb, yb, opt=None):
+    pred_data = model(xb)
     loss = loss_func(pred_data, yb)
-    #loss += 0.01 * ((pred_phys[0] - 1).mean()) ** 2
-    #loss += 0.01 * (pred_phys[1].mean()) ** 2
 
     if opt is not None:
         loss.backward()
@@ -25,9 +17,6 @@ def loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt=None):
     return loss.item(), len(xb)
 
 def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=None, save_path=None, save_dir=None, save_interval=10):
-    spin_up = torch.full([64, 64], 1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
-    spin_down = torch.full([64, 64], -1.0, dtype=torch.float32).to(device).unsqueeze(0).unsqueeze(0)
-
     width = max(4, len(str(epochs)))  # determine width for epoch numbers
 
     # Create save directory if provided
@@ -53,7 +42,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         train_losses = []
         for xb, yb in train_dl:
             xb, yb = xb.to(device), yb.to(device)
-            loss_val, n = loss_batch(model, loss_func, spin_up, spin_down, xb, yb, opt)
+            loss_val, n = loss_batch(model, loss_func, xb, yb, opt)
             train_losses.append((loss_val, n))
 
         train_vals, train_counts = zip(*train_losses)
@@ -63,7 +52,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         model.eval()
         with torch.no_grad():
             val_losses = [
-                loss_batch(model, loss_func, spin_up, spin_down, xb.to(device), yb.to(device))
+                loss_batch(model, loss_func, xb.to(device), yb.to(device))
                 for xb, yb in valid_dl
             ]
             val_vals, val_counts = zip(*val_losses)
