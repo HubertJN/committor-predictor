@@ -222,7 +222,7 @@ def choose_best_lag_score(ms, J, ck, PAA):
     rel_change = np.full(len(J), np.inf, dtype=float)
     rel_change[:-1] = np.abs(np.diff(J)) / np.maximum(np.abs(J[:-1]), 1e-300)
 
-    score = rel_change + ck
+    score = np.where(np.isfinite(ck), ck, np.inf)
 
     # Cannot assess plateau on final lag because there is no next point
     score[-1] = np.inf
