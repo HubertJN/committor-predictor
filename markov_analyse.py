@@ -173,6 +173,31 @@ def bootstrap_J_AB_from_counts(C,
     return stats
 
 
+def lumped_basin_metrics(T, tau, A_states, B_states):
+    P_AA = float(T[np.ix_(A_states, A_states)].sum())
+    P_AB = float(T[np.ix_(A_states, B_states)].sum())
+    P_BB = float(T[np.ix_(B_states, B_states)].sum())
+    P_BA = float(T[np.ix_(B_states, A_states)].sum())
+
+    pi = stationary_distribution(T)
+    pi_A = float(pi[A_states].sum())
+    pi_B = float(pi[B_states].sum())
+
+    MFPT_AB = float(mfpt_A_to_B(T, tau, A_states, B_states))
+    k_AB = float(1.0 / MFPT_AB)
+
+    return {
+        "P_AA": P_AA,
+        "P_AB": P_AB,
+        "P_BB": P_BB,
+        "P_BA": P_BA,
+        "pi_A": pi_A,
+        "pi_B": pi_B,
+        "MFPT_AB": MFPT_AB,
+        "k_AB": k_AB,
+    }
+
+
 def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | None, verbose: bool,
                 c_matrix_in: str | None = None) -> list[dict]:
     m_list, C_dict = load_count_matrices(beta, h, rc=rc, c_matrix_in=c_matrix_in)
@@ -198,18 +223,26 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
         A_states = np.array([0])
         B_states = np.array([S_local - 1])
 
-        # Extra diagnostics
-        P_AA = float(T[np.ix_(A_states, A_states)].sum())
-        P_AB = float(T[np.ix_(A_states, B_states)].sum())
-        P_BB = float(T[np.ix_(B_states, B_states)].sum())
-        P_BA = float(T[np.ix_(B_states, A_states)].sum())
+        metrics = lumped_basin_metrics(T, tau, A_states, B_states)
+        P_AA = metrics["P_AA"]
+        P_AB = metrics["P_AB"]
+        P_BB = metrics["P_BB"]
+        P_BA = metrics["P_BA"]
+        pi_A = metrics["pi_A"]
+        pi_B = metrics["pi_B"]
+        MFPT_AB = metrics["MFPT_AB"]
+        k_AB = metrics["k_AB"]
 
-        pi = stationary_distribution(T)
-        pi_A = float(pi[A_states].sum())
-        pi_B = float(pi[B_states].sum())
-
-        MFPT_AB = float(mfpt_A_to_B(T, tau, A_states, B_states))
-        k_AB = float(1.0 / MFPT_AB)
+        # Candidate lumped A basins
+        A_candidates = [
+            np.array([0]),
+            np.array([0, 1]) if S_local >= 2 else np.array([0]),
+            np.array([0, 1, 2]) if S_local >= 3 else np.array([0]),
+        ]
+        candidate_metrics = []
+        for A_cand in A_candidates:
+            cand = lumped_basin_metrics(T, tau, A_cand, B_states)
+            candidate_metrics.append((A_cand, cand))
 
         ck_max = np.nan
         ck_fro = np.nan
@@ -243,6 +276,19 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             print(f"pi(B): {pi_B:.6f}")
             print(f"MFPT A->B: {MFPT_AB:.6f}")
             print(f"k_AB: {k_AB:.6e}")
+
+            print("Candidate lumped A basins:")
+            for A_cand, cand in candidate_metrics:
+                label = "{" + ",".join(str(int(x)) for x in A_cand) + "}"
+                print(
+                    f"  A={label}: "
+                    f"P(A->A)={cand['P_AA']:.6f}, "
+                    f"P(A->B)={cand['P_AB']:.6f}, "
+                    f"pi(A)={cand['pi_A']:.6f}, "
+                    f"MFPT={cand['MFPT_AB']:.6f}, "
+                    f"k_AB={cand['k_AB']:.6e}"
+                )
+
             if np.isfinite(ck_max):
                 print(f"CK max abs error (2tau vs T(tau)^2): {ck_max:.6e}")
                 print(f"CK Frobenius error: {ck_fro:.6e}")
@@ -278,6 +324,16 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             "pi_B": pi_B,
             "MFPT_AB": MFPT_AB,
             "k_AB": k_AB,
+            "P_AA_01": float(candidate_metrics[1][1]["P_AA"]),
+            "P_AA_012": float(candidate_metrics[2][1]["P_AA"]),
+            "P_AB_01": float(candidate_metrics[1][1]["P_AB"]),
+            "P_AB_012": float(candidate_metrics[2][1]["P_AB"]),
+            "pi_A_01": float(candidate_metrics[1][1]["pi_A"]),
+            "pi_A_012": float(candidate_metrics[2][1]["pi_A"]),
+            "MFPT_AB_01": float(candidate_metrics[1][1]["MFPT_AB"]),
+            "MFPT_AB_012": float(candidate_metrics[2][1]["MFPT_AB"]),
+            "k_AB_01": float(candidate_metrics[1][1]["k_AB"]),
+            "k_AB_012": float(candidate_metrics[2][1]["k_AB"]),
             "ck_max_abs": float(ck_max) if np.isfinite(ck_max) else np.nan,
             "ck_fro": float(ck_fro) if np.isfinite(ck_fro) else np.nan,
             "J_central": float(J_central),
@@ -320,6 +376,18 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
     pi_B = np.array([r["pi_B"] for r in records], dtype=float)
     MFPT_AB = np.array([r["MFPT_AB"] for r in records], dtype=float)
     k_AB = np.array([r["k_AB"] for r in records], dtype=float)
+
+    P_AA_01 = np.array([r["P_AA_01"] for r in records], dtype=float)
+    P_AA_012 = np.array([r["P_AA_012"] for r in records], dtype=float)
+    P_AB_01 = np.array([r["P_AB_01"] for r in records], dtype=float)
+    P_AB_012 = np.array([r["P_AB_012"] for r in records], dtype=float)
+    pi_A_01 = np.array([r["pi_A_01"] for r in records], dtype=float)
+    pi_A_012 = np.array([r["pi_A_012"] for r in records], dtype=float)
+    MFPT_AB_01 = np.array([r["MFPT_AB_01"] for r in records], dtype=float)
+    MFPT_AB_012 = np.array([r["MFPT_AB_012"] for r in records], dtype=float)
+    k_AB_01 = np.array([r["k_AB_01"] for r in records], dtype=float)
+    k_AB_012 = np.array([r["k_AB_012"] for r in records], dtype=float)
+
     ck_max_abs = np.array([r["ck_max_abs"] for r in records], dtype=float)
     ck_fro = np.array([r["ck_fro"] for r in records], dtype=float)
 
@@ -353,6 +421,16 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         pi_B=pi_B,
         MFPT_AB=MFPT_AB,
         k_AB=k_AB,
+        P_AA_01=P_AA_01,
+        P_AA_012=P_AA_012,
+        P_AB_01=P_AB_01,
+        P_AB_012=P_AB_012,
+        pi_A_01=pi_A_01,
+        pi_A_012=pi_A_012,
+        MFPT_AB_01=MFPT_AB_01,
+        MFPT_AB_012=MFPT_AB_012,
+        k_AB_01=k_AB_01,
+        k_AB_012=k_AB_012,
         ck_max_abs=ck_max_abs,
         ck_fro=ck_fro,
         J_central=J_central,
