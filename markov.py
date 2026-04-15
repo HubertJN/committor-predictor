@@ -9,6 +9,7 @@ from utils.dataset import load_hdf5_raw, uniform_filter
 import gasp
 from scipy.ndimage import label
 np.set_printoptions(linewidth=np.inf)
+import matplotlib.pyplot as plt
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = None
@@ -245,13 +246,40 @@ def run_one(
         q_A = float(np.quantile(q_A_ref, 0.95))
         q_B = float(np.quantile(q_B_ref, 0.05))
         print(f"Determined q_A={q_A:.6f} from A states, q_B={q_B:.6f} from B states")
+        
+        # Short test run: N sweeps to refine q_A
+        sweep = 2
+        A_indices = np.where(attrs_all[subset_indices, 2] <= 0.001)[0]
+        if len(A_indices) < gpu_nsms:
+            test_gridlist = [grids_main[np.random.choice(A_indices)] for _ in range(gpu_nsms)]
+        else:
+            chosen_A = np.random.choice(A_indices, size=gpu_nsms, replace=False)
+            test_gridlist = [grids_main[i] for i in chosen_A]
+        
+        gasp.run_committor_calc(
+            L, ngrids, sweep + 1, beta, h,
+            grid_output_int=sweep, mag_output_int=sweep,
+            grid_input="NumPy", grid_array=test_gridlist,
+            keep_grids=True, up_threshold=1.01, dn_threshold=-1.01,
+            nsms=gpu_nsms, gpu_method=2, outname="None",
+            max_keep_grids=2 * ngrids,
+        )
+        test_traj = np.zeros((ngrids, L, L), dtype=np.int8)
+        for i in range(ngrids):
+            test_traj[i] = gasp.grids[-1][i].grid
+        
+        q_test = compute_committors_for_trajectory(test_traj, model, device)
+        q_A_refined = float(np.quantile(q_test, 0.75))
+        print(f"Test run: q_A refined to {q_A_refined:.6f} (95th percentile of {sweep}-sweep endpoints)")
+        q_A = q_A_refined
+        
         q_main = compute_committors_for_trajectory(grids_main, model, device)
     else:
         q_A, q_B = lcs_qab
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-
+    exit()
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
