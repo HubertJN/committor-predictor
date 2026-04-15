@@ -12,7 +12,6 @@ def load_count_matrices(beta: float, h: float, rc: str, c_matrix_in: str | None 
         data_path = Path(c_matrix_in)
     else:
         data_path = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}_{rc}.npz"
-        # Backward-compatible fallback for older CNN-only runs
         if not data_path.exists() and rc == "cnn":
             legacy = Path("data") / f"C_matrices_{beta:.3f}_{h:.3f}.npz"
             if legacy.exists():
@@ -43,20 +42,17 @@ def stochasticity_checks(T):
     neg = np.any(T < -1e-12)
     return row_sums.min(), row_sums.max(), neg
 
+
 def implied_timescales(T, tau):
-    # eigenvalues
     eigvals, _ = np.linalg.eig(T)
     eigvals = np.real(eigvals)
     idx = np.argsort(-eigvals)
     eigvals = eigvals[idx]
-
-    # skip λ = 1
     nontrivial = eigvals[1:6]
-
-    # timescales
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         its = -tau / np.log(nontrivial)
     return eigvals, its
+
 
 def locality_metric(T, band_radius=1):
     S = T.shape[0]
@@ -70,10 +66,12 @@ def locality_metric(T, band_radius=1):
 
     return band_total / total
 
+
 def ck_test(T_tau, T_2tau):
     T_pred = T_tau @ T_tau
     diff = T_pred - T_2tau
     return np.max(np.abs(diff)), np.linalg.norm(diff)
+
 
 def stationary_distribution(T):
     eigvals, eigvecs = np.linalg.eig(T.T)
@@ -83,7 +81,6 @@ def stationary_distribution(T):
     idx = np.argmin(np.abs(eigvals - 1.0))
     pi = eigvecs[:, idx]
 
-    # enforce non-negativity and normalization
     j = np.argmax(np.abs(pi))
     if pi[j] < 0:
         pi = -pi
@@ -91,11 +88,11 @@ def stationary_distribution(T):
     pi /= pi.sum()
     return pi
 
+
 def mfpt_A_to_B(T, tau, A_states, B_states):
     S = T.shape[0]
     all_states = np.arange(S)
 
-    # R = non-B states
     mask_R = np.ones(S, dtype=bool)
     mask_R[B_states] = False
     R = all_states[mask_R]
@@ -106,7 +103,6 @@ def mfpt_A_to_B(T, tau, A_states, B_states):
 
     t_R = np.linalg.solve(I - T_RR, tau * one)
 
-    # MFPT from A: average over A states within R
     mfpts_A = []
     for a in A_states:
         idx_a = np.where(R == a)[0][0]
@@ -115,36 +111,26 @@ def mfpt_A_to_B(T, tau, A_states, B_states):
     MFPT_AB = np.mean(mfpts_A)
     return MFPT_AB
 
+
 def bootstrap_J_AB_from_counts(C,
                                tau,
                                A_states,
                                B_states,
                                n_boot=500,
                                rng_seed=None):
-    """
-    Parametric bootstrap for nucleation rate J_AB from a count matrix C.
-
-    - C : (S, S) int array, counts at lag tau
-    - tau : lag time
-    - A_states, B_states : arrays of state indices
-    - n_boot : number of bootstrap samples
-    """
     rng = np.random.default_rng(rng_seed)
 
     C = np.asarray(C, dtype=float)
     S = C.shape[0]
 
-    # Central transition matrix from C (same as in your code)
     row_sums = C.sum(axis=1, keepdims=True)
     with np.errstate(divide='ignore', invalid='ignore'):
         T_central = np.where(row_sums > 0, C / row_sums, 0.0)
 
-    # Central MFPT and nucleation rate
     MFPT_AB = mfpt_A_to_B(T_central, tau, A_states, B_states)
     k_AB = 1.0 / MFPT_AB
     J_AB = k_AB / (64 * 64)
 
-    # Precompute row-wise probabilities for multinomial resampling
     p = np.zeros_like(T_central)
     row_sums_int = C.sum(axis=1)
     for i in range(S):
@@ -152,11 +138,8 @@ def bootstrap_J_AB_from_counts(C,
         if Ni > 0:
             p[i] = C[i] / Ni
         else:
-            # If no outgoing counts from i, keep it as a row of zeros
-            # (same behavior as your T-construction)
             p[i, :] = 0.0
 
-    # Bootstrap samples of J_AB
     J_samples = np.empty(n_boot, dtype=float)
 
     for b in range(n_boot):
@@ -168,7 +151,6 @@ def bootstrap_J_AB_from_counts(C,
             else:
                 C_b[i, :] = 0
 
-        # Build T_b in the same way as central T
         C_b_float = C_b.astype(float)
         row_sums_b = C_b_float.sum(axis=1, keepdims=True)
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -178,7 +160,6 @@ def bootstrap_J_AB_from_counts(C,
         k_b = 1.0 / MFPT_b
         J_samples[b] = k_b / (64 * 64)
 
-    # Summary statistics
     J_mean = np.mean(J_samples)
     J_std = np.std(J_samples, ddof=1)
     J_low, J_high = np.percentile(J_samples, [2.5, 97.5])
@@ -204,7 +185,7 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
 
     for m in m_list:
         T = T_dict[m]
-        tau = m * 1.0  # Δt = 1
+        tau = m * 1.0
 
         if verbose:
             print(f"\n--- Lag m={m}, tau={tau} ---")
@@ -216,6 +197,24 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
         S_local = T.shape[0]
         A_states = np.array([0])
         B_states = np.array([S_local - 1])
+
+        # Extra diagnostics
+        P_AA = float(T[np.ix_(A_states, A_states)].sum())
+        P_AB = float(T[np.ix_(A_states, B_states)].sum())
+        P_BB = float(T[np.ix_(B_states, B_states)].sum())
+        P_BA = float(T[np.ix_(B_states, A_states)].sum())
+
+        pi = stationary_distribution(T)
+        pi_A = float(pi[A_states].sum())
+        pi_B = float(pi[B_states].sum())
+
+        MFPT_AB = float(mfpt_A_to_B(T, tau, A_states, B_states))
+        k_AB = float(1.0 / MFPT_AB)
+
+        ck_max = np.nan
+        ck_fro = np.nan
+        if 2 * m in T_dict:
+            ck_max, ck_fro = ck_test(T, T_dict[2 * m])
 
         C = C_dict[m]
         stats = bootstrap_J_AB_from_counts(
@@ -236,6 +235,19 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             print(f"Any negative entries: {neg}")
             print("Eigenvalues:", eigvals[:5])
             print(f"Locality (±1 bin): {loc:.4f}")
+            print(f"P(A->A): {P_AA:.6f}")
+            print(f"P(A->B): {P_AB:.6f}")
+            print(f"P(B->B): {P_BB:.6f}")
+            print(f"P(B->A): {P_BA:.6f}")
+            print(f"pi(A): {pi_A:.6f}")
+            print(f"pi(B): {pi_B:.6f}")
+            print(f"MFPT A->B: {MFPT_AB:.6f}")
+            print(f"k_AB: {k_AB:.6e}")
+            if np.isfinite(ck_max):
+                print(f"CK max abs error (2tau vs T(tau)^2): {ck_max:.6e}")
+                print(f"CK Frobenius error: {ck_fro:.6e}")
+            else:
+                print("CK test: skipped (2m matrix not available)")
 
             exp = int(np.floor(np.log10(abs(J_central)))) if J_central != 0 else 0
             coeff_central = J_central / (10**exp) if J_central != 0 else 0
@@ -258,6 +270,16 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             "eigvals_first5": np.asarray(eigvals[:5], dtype=float),
             "its_first5": np.asarray(its[:5], dtype=float),
             "locality_pm1": float(loc),
+            "P_AA": P_AA,
+            "P_AB": P_AB,
+            "P_BB": P_BB,
+            "P_BA": P_BA,
+            "pi_A": pi_A,
+            "pi_B": pi_B,
+            "MFPT_AB": MFPT_AB,
+            "k_AB": k_AB,
+            "ck_max_abs": float(ck_max) if np.isfinite(ck_max) else np.nan,
+            "ck_fro": float(ck_fro) if np.isfinite(ck_fro) else np.nan,
             "J_central": float(J_central),
             "J_mean": float(stats["J_mean"]),
             "J_std": float(J_std),
@@ -290,6 +312,17 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
     eigvals_first5 = np.stack([r["eigvals_first5"] for r in records], axis=0)
     its_first5 = np.stack([r["its_first5"] for r in records], axis=0)
 
+    P_AA = np.array([r["P_AA"] for r in records], dtype=float)
+    P_AB = np.array([r["P_AB"] for r in records], dtype=float)
+    P_BB = np.array([r["P_BB"] for r in records], dtype=float)
+    P_BA = np.array([r["P_BA"] for r in records], dtype=float)
+    pi_A = np.array([r["pi_A"] for r in records], dtype=float)
+    pi_B = np.array([r["pi_B"] for r in records], dtype=float)
+    MFPT_AB = np.array([r["MFPT_AB"] for r in records], dtype=float)
+    k_AB = np.array([r["k_AB"] for r in records], dtype=float)
+    ck_max_abs = np.array([r["ck_max_abs"] for r in records], dtype=float)
+    ck_fro = np.array([r["ck_fro"] for r in records], dtype=float)
+
     J_central = np.array([r["J_central"] for r in records], dtype=float)
     J_mean = np.array([r["J_mean"] for r in records], dtype=float)
     J_std = np.array([r["J_std"] for r in records], dtype=float)
@@ -312,6 +345,16 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         locality_pm1=locality_pm1,
         eigvals_first5=eigvals_first5,
         its_first5=its_first5,
+        P_AA=P_AA,
+        P_AB=P_AB,
+        P_BB=P_BB,
+        P_BA=P_BA,
+        pi_A=pi_A,
+        pi_B=pi_B,
+        MFPT_AB=MFPT_AB,
+        k_AB=k_AB,
+        ck_max_abs=ck_max_abs,
+        ck_fro=ck_fro,
         J_central=J_central,
         J_mean=J_mean,
         J_std=J_std,
@@ -390,4 +433,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
