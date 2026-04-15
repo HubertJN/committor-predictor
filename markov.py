@@ -308,8 +308,6 @@ def run_one(
         plt.savefig("fig.pdf")
         plt.close()
 
-    exit()
-
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)
