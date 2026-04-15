@@ -213,7 +213,7 @@ def lumped_basin_metrics(T, tau, A_states, B_states):
     }
 
 
-def choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15):
+def choose_best_lag_score(ms, J, ck, PAA):
     ms = np.asarray(ms)
     J = np.asarray(J, dtype=float)
     ck = np.asarray(ck, dtype=float)
@@ -222,8 +222,7 @@ def choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15):
     rel_change = np.full(len(J), np.inf, dtype=float)
     rel_change[:-1] = np.abs(np.diff(J)) / np.maximum(np.abs(J[:-1]), 1e-300)
 
-    penalty_paa = np.maximum(0.0, paa_target - PAA)
-    score = rel_change + ck + penalty_paa
+    score = rel_change + ck
 
     # Cannot assess plateau on final lag because there is no next point
     score[-1] = np.inf
@@ -234,7 +233,6 @@ def choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15):
         "best_m": int(ms[best_idx]),
         "score": score,
         "rel_change": rel_change,
-        "penalty_paa": penalty_paa,
     }
 
 
@@ -394,12 +392,11 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
     ck = np.array([r["ck_max_abs"] for r in records], dtype=float)
     PAA = np.array([r["P_AA"] for r in records], dtype=float)
 
-    lag_choice = choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15)
+    lag_choice = choose_best_lag_score(ms, J, ck, PAA)
 
     for i, r in enumerate(records):
         r["lag_score"] = float(lag_choice["score"][i])
         r["lag_rel_change"] = float(lag_choice["rel_change"][i])
-        r["lag_penalty_paa"] = float(lag_choice["penalty_paa"][i])
         r["lag_is_selected"] = bool(i == lag_choice["best_idx"])
 
     if verbose:
@@ -411,8 +408,7 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
                 f"m={m:4d}  "
                 f"score={lag_choice['score'][i]:.6e}  "
                 f"rel_change={rel_str}  "
-                f"ck={ck[i]:.6e}  "
-                f"P(A->A)={PAA[i]:.6f}"
+                f"ck={ck[i]:.6e}"
             )
         print(f"Selected lag: m={lag_choice['best_m']}")
 
@@ -471,7 +467,6 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
 
     lag_score = np.array([r["lag_score"] for r in records], dtype=float)
     lag_rel_change = np.array([r["lag_rel_change"] for r in records], dtype=float)
-    lag_penalty_paa = np.array([r["lag_penalty_paa"] for r in records], dtype=float)
     lag_is_selected = np.array([r["lag_is_selected"] for r in records], dtype=bool)
 
     n_boot = np.array([r["n_boot"] for r in records], dtype=int)
@@ -519,7 +514,6 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         J_ci_high=J_ci_high,
         lag_score=lag_score,
         lag_rel_change=lag_rel_change,
-        lag_penalty_paa=lag_penalty_paa,
         lag_is_selected=lag_is_selected,
         n_boot=n_boot,
         rng_seed=rng_seed,
