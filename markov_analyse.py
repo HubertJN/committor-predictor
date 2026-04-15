@@ -176,7 +176,6 @@ def bootstrap_J_AB_from_counts(C,
 def lumped_basin_metrics(T, tau, A_states, B_states):
     pi = stationary_distribution(T)
 
-    # Conditional stationary weights inside each lumped basin
     wA = pi[A_states].astype(float)
     if wA.sum() > 0:
         wA /= wA.sum()
@@ -211,6 +210,31 @@ def lumped_basin_metrics(T, tau, A_states, B_states):
         "MFPT_AB": MFPT_AB,
         "k_AB": k_AB,
         "J_AB": J_AB,
+    }
+
+
+def choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15):
+    ms = np.asarray(ms)
+    J = np.asarray(J, dtype=float)
+    ck = np.asarray(ck, dtype=float)
+    PAA = np.asarray(PAA, dtype=float)
+
+    rel_change = np.full(len(J), np.inf, dtype=float)
+    rel_change[:-1] = np.abs(np.diff(J)) / np.maximum(np.abs(J[:-1]), 1e-300)
+
+    penalty_paa = np.maximum(0.0, paa_target - PAA)
+    score = rel_change + ck + penalty_paa
+
+    # Cannot assess plateau on final lag because there is no next point
+    score[-1] = np.inf
+
+    best_idx = int(np.argmin(score))
+    return {
+        "best_idx": best_idx,
+        "best_m": int(ms[best_idx]),
+        "score": score,
+        "rel_change": rel_change,
+        "penalty_paa": penalty_paa,
     }
 
 
@@ -249,7 +273,6 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
         MFPT_AB = metrics["MFPT_AB"]
         k_AB = metrics["k_AB"]
 
-        # Candidate lumped A basins
         A_candidates = [
             np.array([0]),
             np.array([0, 1]) if S_local >= 2 else np.array([0]),
@@ -351,6 +374,8 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             "MFPT_AB_012": float(candidate_metrics[2][1]["MFPT_AB"]),
             "k_AB_01": float(candidate_metrics[1][1]["k_AB"]),
             "k_AB_012": float(candidate_metrics[2][1]["k_AB"]),
+            "J_AB_01": float(candidate_metrics[1][1]["J_AB"]),
+            "J_AB_012": float(candidate_metrics[2][1]["J_AB"]),
             "ck_max_abs": float(ck_max) if np.isfinite(ck_max) else np.nan,
             "ck_fro": float(ck_fro) if np.isfinite(ck_fro) else np.nan,
             "J_central": float(J_central),
@@ -362,6 +387,34 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             "rng_seed": (-1 if rng_seed is None else int(rng_seed)),
         }
         records.append(record)
+
+    # Automatic lag selection summary
+    ms = np.array([r["m"] for r in records], dtype=int)
+    J = np.array([r["J_central"] for r in records], dtype=float)
+    ck = np.array([r["ck_max_abs"] for r in records], dtype=float)
+    PAA = np.array([r["P_AA"] for r in records], dtype=float)
+
+    lag_choice = choose_best_lag_score(ms, J, ck, PAA, paa_target=0.15)
+
+    for i, r in enumerate(records):
+        r["lag_score"] = float(lag_choice["score"][i])
+        r["lag_rel_change"] = float(lag_choice["rel_change"][i])
+        r["lag_penalty_paa"] = float(lag_choice["penalty_paa"][i])
+        r["lag_is_selected"] = bool(i == lag_choice["best_idx"])
+
+    if verbose:
+        print("\n=== Automatic lag selection ===")
+        for i, m in enumerate(ms):
+            rel = lag_choice["rel_change"][i]
+            rel_str = f"{rel:.6e}" if np.isfinite(rel) else "inf"
+            print(
+                f"m={m:4d}  "
+                f"score={lag_choice['score'][i]:.6e}  "
+                f"rel_change={rel_str}  "
+                f"ck={ck[i]:.6e}  "
+                f"P(A->A)={PAA[i]:.6f}"
+            )
+        print(f"Selected lag: m={lag_choice['best_m']}")
 
     return records
 
@@ -404,6 +457,8 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
     MFPT_AB_012 = np.array([r["MFPT_AB_012"] for r in records], dtype=float)
     k_AB_01 = np.array([r["k_AB_01"] for r in records], dtype=float)
     k_AB_012 = np.array([r["k_AB_012"] for r in records], dtype=float)
+    J_AB_01 = np.array([r["J_AB_01"] for r in records], dtype=float)
+    J_AB_012 = np.array([r["J_AB_012"] for r in records], dtype=float)
 
     ck_max_abs = np.array([r["ck_max_abs"] for r in records], dtype=float)
     ck_fro = np.array([r["ck_fro"] for r in records], dtype=float)
@@ -413,6 +468,11 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
     J_std = np.array([r["J_std"] for r in records], dtype=float)
     J_ci_low = np.array([r["J_ci_low"] for r in records], dtype=float)
     J_ci_high = np.array([r["J_ci_high"] for r in records], dtype=float)
+
+    lag_score = np.array([r["lag_score"] for r in records], dtype=float)
+    lag_rel_change = np.array([r["lag_rel_change"] for r in records], dtype=float)
+    lag_penalty_paa = np.array([r["lag_penalty_paa"] for r in records], dtype=float)
+    lag_is_selected = np.array([r["lag_is_selected"] for r in records], dtype=bool)
 
     n_boot = np.array([r["n_boot"] for r in records], dtype=int)
     rng_seed = np.array([r["rng_seed"] for r in records], dtype=int)
@@ -448,6 +508,8 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         MFPT_AB_012=MFPT_AB_012,
         k_AB_01=k_AB_01,
         k_AB_012=k_AB_012,
+        J_AB_01=J_AB_01,
+        J_AB_012=J_AB_012,
         ck_max_abs=ck_max_abs,
         ck_fro=ck_fro,
         J_central=J_central,
@@ -455,6 +517,10 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         J_std=J_std,
         J_ci_low=J_ci_low,
         J_ci_high=J_ci_high,
+        lag_score=lag_score,
+        lag_rel_change=lag_rel_change,
+        lag_penalty_paa=lag_penalty_paa,
+        lag_is_selected=lag_is_selected,
         n_boot=n_boot,
         rng_seed=rng_seed,
     )
@@ -522,6 +588,7 @@ def main() -> None:
         out_path = Path(args.msm_out)
     else:
         out_path = per_run_out_path(out_dir, float(beta), float(h), str(args.rc))
+
     save_records_npz(recs, out_path)
     print(f"Saved per-run results to {out_path}")
 
