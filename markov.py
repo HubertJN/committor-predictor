@@ -279,7 +279,6 @@ def run_one(
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-    exit()
     num_steps = 12
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
@@ -295,8 +294,8 @@ def run_one(
         sampled = np.random.choice(indices)
         print(f"Bin {b}: sampled frame index {sampled}")
 
-    m_list = [1024]
-    n_repeats = 4
+    m_list = [16, 32, 64, 128, 256, 512, 1024, 2048]
+    n_repeats = 1 
     C_dict = {}
 
     for m in m_list:
