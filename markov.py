@@ -236,25 +236,10 @@ def run_one(
     grids_main, _, _ = load_hdf5_raw(h5path, indices=subset_indices)
     print(f"Selected {len(grids_main)} grids uniformly across committor bins")
 
-    if rc == "cnn":
-        A_mask = attrs_all[subset_indices, 2] <= 0.01
-        B_mask = attrs_all[subset_indices, 2] >= 0.99
-
-        q_A_ref = compute_committors_for_trajectory(grids_main[A_mask], model, device)
-        q_B_ref = compute_committors_for_trajectory(grids_main[B_mask], model, device)
-
-        q_A = float(np.quantile(q_A_ref, 0.95))
-        q_B = float(np.quantile(q_B_ref, 0.05))
-        print(f"Determined q_A={q_A:.6f} from A states, q_B={q_B:.6f} from B states")
-        
+    if rc == "cnn": 
         # Short test run: N sweeps to refine q_A
-        sweep = 2
-        A_indices = np.where(attrs_all[subset_indices, 2] <= 0.001)[0]
-        if len(A_indices) < gpu_nsms:
-            test_gridlist = [grids_main[np.random.choice(A_indices)] for _ in range(gpu_nsms)]
-        else:
-            chosen_A = np.random.choice(A_indices, size=gpu_nsms, replace=False)
-            test_gridlist = [grids_main[i] for i in chosen_A]
+        sweep = 8
+        test_gridlist = [-np.ones_like(grids_main[0]) for _ in range(gpu_nsms)]
         
         gasp.run_committor_calc(
             L, ngrids, sweep + 1, beta, h,
@@ -269,14 +254,61 @@ def run_one(
             test_traj[i] = gasp.grids[-1][i].grid
         
         q_test = compute_committors_for_trajectory(test_traj, model, device)
-        q_A_refined = float(np.quantile(q_test, 0.75))
+        q_A_refined = float(np.quantile(q_test, 0.85))
         print(f"Test run: q_A refined to {q_A_refined:.6f} (95th percentile of {sweep}-sweep endpoints)")
         q_A = q_A_refined
+        q_B = 0.995
+
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(q_test, bins=30, color="steelblue", edgecolor="black", alpha=0.7)
+        ax.axvline(q_A_refined, color="red", linestyle="--", linewidth=2, label=f"q_A = {q_A_refined:.1f}")
+        ax.set_xlabel("Largest Cluster Size", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title(f"Test Run LCS (2 sweeps, β={beta:.3f}, h={h:.3f})", fontsize=13)
+        ax.legend()
+        plt.tight_layout()
+
+        plt.savefig("fig.pdf")
+        plt.close()
         
         q_main = compute_committors_for_trajectory(grids_main, model, device)
     else:
-        q_A, q_B = lcs_qab
-        q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
+        q_A,q_B = lcs_qab
+        # Short test run: N sweeps to refine q_A for LCS
+        sweep = 8
+        test_gridlist = [-np.ones_like(grids_main[0]) for _ in range(gpu_nsms)]
+        
+        gasp.run_committor_calc(
+            L, ngrids, sweep + 1, beta, h,
+            grid_output_int=sweep, mag_output_int=sweep,
+            grid_input="NumPy", grid_array=test_gridlist,
+            keep_grids=True, up_threshold=1.01, dn_threshold=-1.01,
+            nsms=gpu_nsms, gpu_method=2, outname="None",
+            max_keep_grids=2 * ngrids,
+        )
+        test_traj = np.zeros((ngrids, L, L), dtype=np.int8)
+        for i in range(ngrids):
+            test_traj[i] = gasp.grids[-1][i].grid
+                
+        lcs_test = largest_cluster_sizes_up(test_traj)
+        q_A_refined = float(np.quantile(lcs_test, 0.85))
+        print(f"Test run: q_A refined to {q_A_refined:.1f} (75th percentile of {sweep}-sweep endpoints LCS)")
+        q_A = q_A_refined
+        
+        # Plot histogram of LCS test
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.hist(lcs_test, bins=30, color="steelblue", edgecolor="black", alpha=0.7)
+        ax.axvline(q_A_refined, color="red", linestyle="--", linewidth=2, label=f"q_A = {q_A_refined:.1f}")
+        ax.set_xlabel("Largest Cluster Size", fontsize=12)
+        ax.set_ylabel("Count", fontsize=12)
+        ax.set_title(f"Test Run LCS (2 sweeps, β={beta:.3f}, h={h:.3f})", fontsize=13)
+        ax.legend()
+        plt.tight_layout()
+
+        plt.savefig("fig.pdf")
+        plt.close()
+
+    exit()
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
     num_steps = 12
