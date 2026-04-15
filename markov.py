@@ -273,6 +273,7 @@ def run_one(
         
         q_main = compute_committors_for_trajectory(grids_main, model, device)
     else:
+        
         q_A,q_B = lcs_qab
         # Short test run: N sweeps to refine q_A for LCS
         sweep = 8
@@ -307,6 +308,8 @@ def run_one(
 
         plt.savefig("fig.pdf")
         plt.close()
+
+        q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
 
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
     num_steps = 12
