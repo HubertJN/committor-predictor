@@ -174,17 +174,32 @@ def bootstrap_J_AB_from_counts(C,
 
 
 def lumped_basin_metrics(T, tau, A_states, B_states):
-    P_AA = float(T[np.ix_(A_states, A_states)].sum())
-    P_AB = float(T[np.ix_(A_states, B_states)].sum())
-    P_BB = float(T[np.ix_(B_states, B_states)].sum())
-    P_BA = float(T[np.ix_(B_states, A_states)].sum())
-
     pi = stationary_distribution(T)
+
+    # Conditional stationary weights inside each lumped basin
+    wA = pi[A_states].astype(float)
+    if wA.sum() > 0:
+        wA /= wA.sum()
+    else:
+        wA = np.ones(len(A_states), dtype=float) / len(A_states)
+
+    wB = pi[B_states].astype(float)
+    if wB.sum() > 0:
+        wB /= wB.sum()
+    else:
+        wB = np.ones(len(B_states), dtype=float) / len(B_states)
+
+    P_AA = float(np.sum(wA[:, None] * T[np.ix_(A_states, A_states)]))
+    P_AB = float(np.sum(wA[:, None] * T[np.ix_(A_states, B_states)]))
+    P_BB = float(np.sum(wB[:, None] * T[np.ix_(B_states, B_states)]))
+    P_BA = float(np.sum(wB[:, None] * T[np.ix_(B_states, A_states)]))
+
     pi_A = float(pi[A_states].sum())
     pi_B = float(pi[B_states].sum())
 
     MFPT_AB = float(mfpt_A_to_B(T, tau, A_states, B_states))
     k_AB = float(1.0 / MFPT_AB)
+    J_AB = float(k_AB / (64 * 64))
 
     return {
         "P_AA": P_AA,
@@ -195,6 +210,7 @@ def lumped_basin_metrics(T, tau, A_states, B_states):
         "pi_B": pi_B,
         "MFPT_AB": MFPT_AB,
         "k_AB": k_AB,
+        "J_AB": J_AB,
     }
 
 
@@ -286,7 +302,8 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
                     f"P(A->B)={cand['P_AB']:.6f}, "
                     f"pi(A)={cand['pi_A']:.6f}, "
                     f"MFPT={cand['MFPT_AB']:.6f}, "
-                    f"k_AB={cand['k_AB']:.6e}"
+                    f"k_AB={cand['k_AB']:.6e}, "
+                    f"J_AB={cand['J_AB']:.6e}"
                 )
 
             if np.isfinite(ck_max):
