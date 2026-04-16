@@ -213,26 +213,66 @@ def lumped_basin_metrics(T, tau, A_states, B_states):
     }
 
 
+def rank_better_is_smaller(values):
+    """Rank an array where smaller values get better (lower) ranks.
+    Non-finite values get the worst rank.
+    Returns ranks as 0-indexed (best rank is 0)."""
+    values = np.asarray(values, dtype=float)
+    n = len(values)
+    
+    # Initialize ranks with worst value
+    ranks = np.full(n, n, dtype=float)
+    
+    # Identify finite values
+    finite_mask = np.isfinite(values)
+    
+    if np.sum(finite_mask) > 0:
+        finite_indices = np.where(finite_mask)[0]
+        finite_values = values[finite_indices]
+        
+        # Sort indices by value (ascending, so smaller is better)
+        sorted_idx = np.argsort(finite_values)
+        
+        # Assign ranks 0, 1, 2, ... to sorted positions
+        for rank, idx_in_finite in enumerate(sorted_idx):
+            original_idx = finite_indices[idx_in_finite]
+            ranks[original_idx] = rank
+    
+    return ranks
+
+
 def choose_best_lag_score(ms, J, ck, PAA):
     ms = np.asarray(ms)
     J = np.asarray(J, dtype=float)
     ck = np.asarray(ck, dtype=float)
-    PAA = np.asarray(PAA, dtype=float)
+    PAA = np.asarray(PAA, dtype=float)  # kept for compatibility but not used in scoring
 
+    # Compute stability metric: relative change in rate to next lag
     rel_change = np.full(len(J), np.inf, dtype=float)
     rel_change[:-1] = np.abs(np.diff(J)) / np.maximum(np.abs(J[:-1]), 1e-300)
 
-    score = np.where(np.isfinite(ck), ck, np.inf)
+    # Final lag cannot be selected based on stability (no next lag exists)
+    rel_change[-1] = np.inf
 
-    # Cannot assess plateau on final lag because there is no next point
-    score[-1] = np.inf
+    # Rank both metrics (smaller is better for both)
+    rank_stability = rank_better_is_smaller(rel_change)
+    rank_ck = rank_better_is_smaller(ck)
 
-    best_idx = int(np.argmin(score))
+    # Combine ranks by summing
+    score = rank_stability + rank_ck
+
+    # Find best lag (lowest combined rank, tie-break by smallest m)
+    best_score = np.min(score)
+    candidates = np.where(score == best_score)[0]
+    best_idx = candidates[np.argmin(ms[candidates])]
+
     return {
-        "best_idx": best_idx,
+        "best_idx": int(best_idx),
         "best_m": int(ms[best_idx]),
         "score": score,
         "rel_change": rel_change,
+        "rank_stability": rank_stability,
+        "rank_ck": rank_ck,
     }
 
 
@@ -406,9 +446,11 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
             rel_str = f"{rel:.6e}" if np.isfinite(rel) else "inf"
             print(
                 f"m={m:4d}  "
-                f"score={lag_choice['score'][i]:.6e}  "
-                f"rel_change={rel_str}  "
-                f"ck={ck[i]:.6e}"
+                f"rank_stab={lag_choice['rank_stability'][i]:.0f}  "
+                f"rank_ck={lag_choice['rank_ck'][i]:.0f}  "
+                f"score={lag_choice['score'][i]:.0f}  "
+                f"ck={ck[i]:.6e}  "
+                f"rel_change={rel_str}"
             )
         print(f"Selected lag: m={lag_choice['best_m']}")
 
