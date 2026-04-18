@@ -257,6 +257,7 @@ def run_one(
         q_A_refined = float(np.quantile(q_test, 0.85))
         print(f"Test run: q_A refined to {q_A_refined:.6f} (95th percentile of {sweep}-sweep endpoints)")
         q_A = q_A_refined
+        if (q_A < 0.01): q_A = 0.01
         q_B = 0.995
 
         fig, ax = plt.subplots(figsize=(8, 5))
@@ -310,9 +311,10 @@ def run_one(
         plt.close()
 
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
-
+    
+    print("Basins:", q_A, q_B)
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-    num_steps = 12
+    num_steps = 14
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
     N = len(q_bins) - 1
@@ -327,7 +329,7 @@ def run_one(
         sampled = np.random.choice(indices)
         print(f"Bin {b}: sampled frame index {sampled}")
 
-    m_list = [16, 32, 64, 128, 256, 512, 1024, 2048]
+    m_list = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     n_repeats = 1 
     C_dict = {}
 
