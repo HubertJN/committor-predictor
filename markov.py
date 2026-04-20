@@ -314,13 +314,19 @@ def run_one(
     
     print("Basins:", q_A, q_B)
     print("RC range:", float(np.min(q_main)), float(np.max(q_main)))
-    num_steps = 14
+    if rc == "cnn":
+        num_steps = 40+1 
+    else:
+        num_steps = 20+1
     q_bins = np.linspace(q_A, q_B, num_steps)
     full_bins = np.concatenate(([-np.inf], q_bins, [np.inf]))
     N = len(q_bins) - 1
     bin_ids = np.array([bin_state(q) for q in q_main])
     S = N + 2
-
+    
+    print("Bin size:", q_bins[1]-q_bins[0])
+    print("Number of Markov states:", S)
+    
     for b in range(S):
         indices = np.where(bin_ids == b)[0]
         if len(indices) == 0:
@@ -329,7 +335,7 @@ def run_one(
         sampled = np.random.choice(indices)
         print(f"Bin {b}: sampled frame index {sampled}")
 
-    m_list = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+    m_list = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     n_repeats = 1 
     C_dict = {}
 
