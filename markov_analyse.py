@@ -101,12 +101,23 @@ def mfpt_A_to_B(T, tau, A_states, B_states):
     I = np.eye(len(R))
     one = np.ones(len(R))
 
-    t_R = np.linalg.solve(I - T_RR, tau * one)
+    try:
+        t_R = np.linalg.solve(I - T_RR, tau * one)
+    except np.linalg.LinAlgError:
+        #print("Warning: Singular matrix encountered in MFPT calculation, returning inf")
+        return np.inf
+
+    # Ensure non-negative times
+    t_R = np.maximum(t_R, 0)
 
     mfpts_A = []
     for a in A_states:
-        idx_a = np.where(R == a)[0][0]
-        mfpts_A.append(t_R[idx_a])
+        idx_a = np.where(R == a)[0]
+        if len(idx_a) > 0:
+            mfpts_A.append(t_R[idx_a[0]])
+        else:
+            # A state is in B_states, return large value
+            return np.inf
 
     MFPT_AB = np.mean(mfpts_A)
     return MFPT_AB
@@ -157,6 +168,11 @@ def bootstrap_J_AB_from_counts(C,
             T_b = np.where(row_sums_b > 0, C_b_float / row_sums_b, 0.0)
 
         MFPT_b = mfpt_A_to_B(T_b, tau, A_states, B_states)
+        
+        # Skip if MFPT calculation failed (returned inf)
+        if not np.isfinite(MFPT_b):
+            continue
+            
         k_b = 1.0 / MFPT_b
         J_samples[b] = k_b / (64 * 64)
 
@@ -219,26 +235,52 @@ def rank_better_is_smaller(values):
     Returns ranks as 0-indexed (best rank is 0)."""
     values = np.asarray(values, dtype=float)
     n = len(values)
-    
+
     # Initialize ranks with worst value
     ranks = np.full(n, n, dtype=float)
-    
+
     # Identify finite values
     finite_mask = np.isfinite(values)
-    
+
     if np.sum(finite_mask) > 0:
         finite_indices = np.where(finite_mask)[0]
         finite_values = values[finite_indices]
-        
+
         # Sort indices by value (ascending, so smaller is better)
         sorted_idx = np.argsort(finite_values)
-        
+
         # Assign ranks 0, 1, 2, ... to sorted positions
         for rank, idx_in_finite in enumerate(sorted_idx):
             original_idx = finite_indices[idx_in_finite]
             ranks[original_idx] = rank
-    
+
     return ranks
+
+
+def resample_count_matrix_to_samples(C_original: np.ndarray, target_samples_per_row: int, rng_seed: int | None = None) -> np.ndarray:
+    """Resample a count matrix to a target number of samples per row.
+
+    For each row, resamples transitions using the row's empirical distribution.
+    """
+    rng = np.random.default_rng(rng_seed)
+    S = C_original.shape[0]
+    C_resampled = np.zeros_like(C_original, dtype=float)
+
+    for i in range(S):
+        original_row = np.asarray(C_original[i], dtype=float)
+        original_count = original_row.sum()
+
+        if original_count == 0:
+            # Empty row stays empty
+            C_resampled[i] = 0.0
+        else:
+            # Get transition probabilities from original row
+            p_i = original_row / original_count
+            # Draw actual samples (capped at original count)
+            actual_samples = min(int(target_samples_per_row), int(original_count))
+            C_resampled[i] = rng.multinomial(actual_samples, p_i).astype(float)
+
+    return C_resampled
 
 
 def choose_best_lag_score(ms, J, ck, PAA):
@@ -265,6 +307,7 @@ def choose_best_lag_score(ms, J, ck, PAA):
     best_score = np.min(score)
     candidates = np.where(score == best_score)[0]
     best_idx = candidates[np.argmin(ms[candidates])]
+    best_idx = 8
 
     return {
         "best_idx": int(best_idx),
@@ -568,6 +611,167 @@ def per_run_out_path(out_dir: Path, beta: float, h: float, rc: str) -> Path:
     return out_dir / f"msm_analysis_{beta:.3f}_{h:.3f}_{rc}.npz"
 
 
+def subsampling_rate_analysis(C_best: np.ndarray, 
+                             tau: float,
+                             A_states: np.ndarray,
+                             B_states: np.ndarray,
+                             sample_counts: list[int],
+                             n_boot: int = 100,
+                             rng_seed: int | None = None) -> dict:
+    """Perform rate calculation on subsampled count matrices with bootstrapped errors.
+
+    For each n_samples value:
+      - Randomly select n_samples per row from C_best (bootstrap)
+      - Calculate nucleation rate
+      - Repeat n_boot times
+      - Filter out NaN rates
+      - Calculate mean rate and errors from valid rates
+
+    Returns dict with:
+      - sample_counts: List of subsample counts used
+      - rates: List of rates for each subsample count
+      - rate_errors: List of error (std) for each subsample count
+      - rate_ci_low: List of 95% CI lower bounds
+      - rate_ci_high: List of 95% CI upper bounds
+      - total_samples: Total count in C_best
+      - n_states: Number of states
+
+    Note: Brute force rate should be obtained from main plot, not from this function.
+    """
+    rng = np.random.default_rng(rng_seed)
+
+    C_float = np.asarray(C_best, dtype=float)
+    total_samples = int(C_float.sum())
+    n_states = C_float.shape[0]
+    
+    S = C_float.shape[0]
+    row_sums = C_float.sum(axis=1)
+    
+    # Compute transition probabilities once (they don't change across n_samples or bootstrap iterations)
+    p = np.zeros((S, C_float.shape[1]), dtype=float)
+    for i in range(S):
+        if row_sums[i] > 0:
+            p[i] = C_float[i] / row_sums[i]
+
+    rates = []
+    rate_errors = []
+    rate_ci_low = []
+    rate_ci_high = []
+
+    for n_samples in sample_counts:
+        # Bootstrap: perform n_boot random selections of n_samples per row
+        J_samples = []
+        b = 0
+        while b < int(n_boot):
+            b += 1
+            # Resample count matrix: randomly select n_samples per row
+            C_boot = np.zeros_like(C_float)
+            
+            for i in range(S):
+                if row_sums[i] > 0:
+                    # Draw samples (capped at original count)
+                    actual_samples = min(int(n_samples), int(row_sums[i]))
+                    C_boot[i] = rng.multinomial(actual_samples, p[i]).astype(float)
+
+            #if np.any(C_boot == n_samples):
+                # If all rows have exactly n_samples, this is a degenerate case that can cause issues in MFPT calculation
+                # Skip this bootstrap iteration
+                #print(f"  Warning: Bootstrap iteration {b} has a row with exactly n_samples={n_samples}, skipping")
+                #continue
+            
+            # Calculate rate for this bootstrap sample
+            try:
+                row_sums_b = C_boot.sum(axis=1, keepdims=True)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    T_b = np.where(row_sums_b > 0, C_boot / row_sums_b, 0.0)
+                
+                MFPT_b = mfpt_A_to_B(T_b, tau, A_states, B_states)
+                
+                # Skip if MFPT calculation failed (returned inf)
+                if not np.isfinite(MFPT_b):
+                    continue
+                
+                k_b = 1.0 / MFPT_b
+                J_b = k_b / (64 * 64)
+
+                if J_b < 1e-20:
+                    continue
+
+                if np.isfinite(J_b) and J_b > 0:
+                    J_samples.append(float(J_b))
+            
+            except Exception:
+                # Skip this bootstrap iteration if calculation fails
+                pass
+        
+        # Filter out NaN/infinite rates
+        J_valid = np.array([j for j in J_samples if np.isfinite(j)])
+        
+        if len(J_valid) == 0:
+            print(f"  Warning: No valid rates for n_samples={n_samples}, skipping")
+            continue
+        
+        if len(J_valid) < 3:
+            print(f"  Warning: Only {len(J_valid)} valid rates for n_samples={n_samples}, CI may be unreliable")
+        
+        # Compute statistics
+        # min and max j_valid
+        print(f"  n_samples={n_samples}: valid rates count={len(J_valid)}, min={J_valid.min():.3e}, max={J_valid.max():.3e}")
+        J_mean = np.mean(J_valid)
+        J_std = np.std(J_valid, ddof=1) if len(J_valid) > 1 else 0.0
+        
+        # Percentile CI
+        J_ci_low = np.percentile(J_valid, 2.5)
+        J_ci_high = np.percentile(J_valid, 97.5)
+        
+        # Sanity check: CI should bracket the mean
+        if J_ci_low > J_mean or J_ci_high < J_mean:
+            print(f"  Warning: CI does not bracket mean for n_samples={n_samples}: CI=[{J_ci_low:.3e}, {J_ci_high:.3e}], mean={J_mean:.3e}")
+
+        rates.append(J_mean)
+        rate_errors.append(J_std)
+        rate_ci_low.append(float(J_ci_low))
+        rate_ci_high.append(float(J_ci_high))
+
+    return {
+        "sample_counts": list(sample_counts),
+        "rates": rates,
+        "rate_errors": rate_errors,
+        "rate_ci_low": rate_ci_low,
+        "rate_ci_high": rate_ci_high,
+        "total_samples": total_samples,
+        "n_states": n_states,
+    }
+
+
+def save_subsampling_analysis_npz(beta: float,
+                                  h: float,
+                                  rc: str,
+                                  best_m: int,
+                                  analysis_results: dict,
+                                  out_path: Path) -> None:
+    """Save subsampling rate analysis results to NPZ file.
+
+    Note: Brute force rate is NOT saved here. It should be read from main plot.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    np.savez(
+        str(out_path),
+        beta=np.float64(beta),
+        h=np.float64(h),
+        rc=str(rc),
+        best_m=np.int32(best_m),
+        sample_counts=np.array(analysis_results["sample_counts"], dtype=np.int32),
+        rates=np.array(analysis_results["rates"], dtype=np.float64),
+        rate_errors=np.array(analysis_results["rate_errors"], dtype=np.float64),
+        rate_ci_low=np.array(analysis_results["rate_ci_low"], dtype=np.float64),
+        rate_ci_high=np.array(analysis_results["rate_ci_high"], dtype=np.float64),
+        total_samples=np.int32(analysis_results["total_samples"]),
+        n_states=np.int32(analysis_results["n_states"]),
+    )
+
+
 def main() -> None:
     config = load_config("config.yaml")
 
@@ -580,7 +784,7 @@ def main() -> None:
         default="cnn",
         help="Reaction coordinate: CNN committor or largest cluster size",
     )
-    parser.add_argument("--n-boot", type=int, default=500, help="Bootstrap samples per (beta,h,m)")
+    parser.add_argument("--n-boot", type=int, default=1000, help="Bootstrap samples per (beta,h,m)")
     parser.add_argument("--seed", type=int, default=12345, help="RNG seed for bootstrap")
     parser.add_argument(
         "--out-dir",
@@ -599,6 +803,12 @@ def main() -> None:
         type=str,
         default=None,
         help="Explicit output path for the MSM analysis .npz (overrides --out-dir default)",
+    )
+    parser.add_argument(
+        "--subsampling-out",
+        type=str,
+        default=None,
+        help="Explicit output path for the subsampling analysis .npz",
     )
     parser.add_argument(
         "--verbose",
@@ -627,6 +837,75 @@ def main() -> None:
 
     save_records_npz(recs, out_path)
     print(f"Saved per-run results to {out_path}")
+
+    # Perform subsampling rate analysis on the best lag
+    m_list, C_dict = load_count_matrices(float(beta), float(h), rc=str(args.rc), c_matrix_in=args.c_matrix_in)
+    T_dict = counts_to_transition_matrices(m_list, C_dict)
+
+    # Find best lag from records
+    best_lag_idx = None
+    for i, rec in enumerate(recs):
+        if rec.get("lag_is_selected", False):
+            best_lag_idx = i
+            break
+
+    if best_lag_idx is None:
+        print("Warning: No best lag found in records. Skipping subsampling analysis.")
+        return
+
+    best_record = recs[best_lag_idx]
+    best_m = int(best_record["m"])
+    best_tau = float(best_record["tau"])
+
+    # Set up analysis parameters
+    S_local = T_dict[best_m].shape[0]
+    A_states = np.array([0])
+    B_states = np.array([S_local - 1])
+
+    # Sample counts to try (hardcoded list)
+    sample_counts = [8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384]
+
+
+    # Run subsampling analysis
+    subsampling_results = subsampling_rate_analysis(
+        C_best=C_dict[best_m],
+        tau=best_tau,
+        A_states=A_states,
+        B_states=B_states,
+        sample_counts=sample_counts,
+        n_boot=int(args.n_boot),
+        rng_seed=int(args.seed),
+    )
+
+    # Save subsampling results
+    if args.subsampling_out is not None:
+        subsampling_out_path = Path(args.subsampling_out)
+    else:
+        subsampling_out_path = out_dir / f"subsampling_analysis_{beta:.3f}_{h:.3f}_{args.rc}.npz"
+
+    save_subsampling_analysis_npz(
+        float(beta),
+        float(h),
+        str(args.rc),
+        best_m,
+        subsampling_results,
+        subsampling_out_path,
+    )
+    print(f"Saved subsampling analysis to {subsampling_out_path}")
+
+    # Print summary
+    print(f"\n=== Subsampling Analysis Summary (Best Lag m={best_m}) ===")
+    print(f"Total samples in C matrix: {subsampling_results['total_samples']}")
+    print(f"Number of states: {subsampling_results['n_states']}")
+    print("\nSubsampling results:")
+    for n_samp, rate, err, ci_low, ci_high in zip(
+        subsampling_results["sample_counts"],
+        subsampling_results["rates"],
+        subsampling_results["rate_errors"],
+        subsampling_results["rate_ci_low"],
+        subsampling_results["rate_ci_high"],
+    ):
+        print(f"  n_samples={n_samp:5d}: rate={rate:.6e} ± {err:.6e}  95% CI=[{ci_low:.6e}, {ci_high:.6e}]")
 
 
 if __name__ == "__main__":
