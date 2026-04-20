@@ -332,8 +332,6 @@ def run_one(
     m_list = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     n_repeats = 1 
     C_dict = {}
-    previous_m = None
-    previous_trajs_per_bin = {}  # Track {b: trajectory array} for each bin
 
     for m in m_list:
         print(f"\n=== Processing lag m={m} ===")
@@ -348,25 +346,15 @@ def run_one(
             traj_list = []
             for r in range(n_repeats):
                 print(f"  Bin {b}: repeat {r+1}/{n_repeats}")
-                
-                # Determine starting grids and number of sweeps
-                if previous_m is None or b not in previous_trajs_per_bin:
-                    # First iteration or new bin: start from initial conditions
-                    if len(frames_in_bin) >= gpu_nsms:
-                        chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=False)
-                    else:
-                        chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
-                    gridlist = [grids_main[i].copy() for i in chosen]
-                    sweeps_to_run = m
+                if len(frames_in_bin) >= gpu_nsms:
+                    chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=False)
                 else:
-                    # Reuse trajectories from previous m for this specific bin
-                    prev_traj = previous_trajs_per_bin[b]
-                    gridlist = [prev_traj[i % len(prev_traj)].copy() for i in range(gpu_nsms)]
-                    sweeps_to_run = m - previous_m
-                
+                    chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
+
+                gridlist = [grids_main[i].copy() for i in chosen]
                 gasp.run_committor_calc(
-                    L, ngrids, sweeps_to_run+1, beta, h,
-                    grid_output_int=sweeps_to_run, mag_output_int=sweeps_to_run,
+                    L, ngrids, m + 1, beta, h,
+                    grid_output_int=m, mag_output_int=m,
                     grid_input="NumPy", grid_array=gridlist,
                     keep_grids=True, up_threshold=1.01, dn_threshold=-1.01,
                     nsms=gpu_nsms, gpu_method=2, outname="None",
@@ -385,10 +373,6 @@ def run_one(
 
         C_m = build_C_matrix_for_lag(m, generated_trajs)
         C_dict[m] = C_m
-        
-        # Save trajectories for next iteration, per bin
-        previous_m = m
-        previous_trajs_per_bin = generated_trajs.copy()
 
     if c_matrix_out is not None:
         out_path = Path(c_matrix_out)
