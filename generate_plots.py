@@ -27,6 +27,7 @@ colors = {
 import torch
 import argparse
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.optimize import curve_fit
@@ -50,6 +51,7 @@ plt.rcParams.update({
     'legend.fontsize': FONT_SIZE * 0.9,
     'figure.titlesize': FONT_SIZE * 1.1
 })
+mpl.rcParams["svg.fonttype"] = "none"
 
 # --- Load Config ---
 config = load_config("config.yaml")
@@ -168,9 +170,9 @@ else:
     x_upper = float(np.max(test_cluster_size))
 
 plt.xlim(-25, x_upper)
-plt.savefig(plot_dir / "sigmoid_cluster.pdf")
+plt.savefig(plot_dir / "sigmoid_cluster.svg")
 plt.close()
-print(f"Saved cluster size vs committor plot with error bars to {plot_dir}/sigmoid_cluster.pdf")
+print(f"Saved cluster size vs committor plot with error bars to {plot_dir}/sigmoid_cluster.svg")
 
 if smallest_cluster_at_one is not None:
     print(
@@ -187,30 +189,125 @@ print(f"Critical cluster size at committor = 0.5: {x_at_half}")
 #exit()
 
 # =======================
+# --- Binned 95% prediction intervals ---
+# =======================
+def build_binned_interval_model(y_true, y_pred, n_bins=25, use_quantile_bins=True):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    abs_res = np.abs(y_true - y_pred)
+
+    if use_quantile_bins:
+        edges = np.quantile(y_pred, np.linspace(0.0, 1.0, n_bins + 1))
+    else:
+        edges = np.linspace(0.0, 1.0, n_bins + 1)
+
+    edges[0] = 0.0
+    edges[-1] = 1.0
+
+    for i in range(1, len(edges)):
+        if edges[i] <= edges[i - 1]:
+            edges[i] = edges[i - 1] + 1e-12
+
+    q95 = np.zeros(n_bins, dtype=float)
+    counts = np.zeros(n_bins, dtype=int)
+    global_q95 = np.quantile(abs_res, 0.95)
+
+    for i in range(n_bins):
+        if i == n_bins - 1:
+            mask = (y_pred >= edges[i]) & (y_pred <= edges[i + 1])
+        else:
+            mask = (y_pred >= edges[i]) & (y_pred < edges[i + 1])
+
+        counts[i] = np.sum(mask)
+        q95[i] = np.quantile(abs_res[mask], 0.95) if counts[i] > 0 else global_q95
+
+    return {
+        "edges": edges,
+        "q95": q95,
+        "counts": counts,
+        "global_q95": global_q95,
+    }
+
+
+def lookup_binned_q95(y_pred_new, interval_model):
+    y_pred_new = np.asarray(y_pred_new, dtype=float)
+    edges = interval_model["edges"]
+    q95 = interval_model["q95"]
+
+    inds = np.digitize(y_pred_new, edges[1:-1], right=False)
+    inds = np.clip(inds, 0, len(q95) - 1)
+    return q95[inds], inds
+
+
+def make_bounded_curve_from_bins(y_true, y_pred, interval_model):
+    """
+    Build a connected curve where:
+      x = mean target committor in each prediction bin
+      y = mean predicted committor in each prediction bin
+      band = y ± q95(bin)
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    edges = interval_model["edges"]
+    q95 = interval_model["q95"]
+    n_bins = len(q95)
+
+    x_mean = np.full(n_bins, np.nan, dtype=float)
+    y_mean = np.full(n_bins, np.nan, dtype=float)
+    y_low = np.full(n_bins, np.nan, dtype=float)
+    y_high = np.full(n_bins, np.nan, dtype=float)
+
+    for i in range(n_bins):
+        if i == n_bins - 1:
+            mask = (y_pred >= edges[i]) & (y_pred <= edges[i + 1])
+        else:
+            mask = (y_pred >= edges[i]) & (y_pred < edges[i + 1])
+
+        if np.any(mask):
+            x_mean[i] = np.mean(y_true[mask])
+            y_mean[i] = np.mean(y_pred[mask])
+            y_low[i] = max(0.0, y_mean[i] - q95[i])
+            y_high[i] = min(1.0, y_mean[i] + q95[i])
+
+    valid = np.isfinite(x_mean) & np.isfinite(y_mean) & np.isfinite(y_low) & np.isfinite(y_high)
+    x_mean = x_mean[valid]
+    y_mean = y_mean[valid]
+    y_low = y_low[valid]
+    y_high = y_high[valid]
+
+    order = np.argsort(x_mean)
+    return x_mean[order], y_mean[order], y_low[order], y_high[order]
+
+# =======================
 # --- CNN Predictions ---
 # =======================
 y_test = np.array([test_ds[i][1].item() for i in range(len(test_ds))])
 y_test_err = attrs[:, 3][test_idx]
 
-# Process in chunks to avoid GPU memory issues
 chunk_size = 1024
-predictions = []
+cnn_predictions = []
 for i in range(0, len(test_ds), chunk_size):
     end_idx = min(i + chunk_size, len(test_ds))
     batch = torch.stack([test_ds[j][0] for j in range(i, end_idx)]).to(device)
     with torch.no_grad():
         batch_preds = model(batch).squeeze().cpu().numpy()
-        if batch_preds.ndim == 0:
+        if np.ndim(batch_preds) == 0:
             batch_preds = np.array([batch_preds])
-        predictions.extend(batch_preds)
+        cnn_predictions.extend(batch_preds)
 
-predictions = np.array(predictions)
-rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
+cnn_predictions = np.array(cnn_predictions)
+cnn_rmse = np.sqrt(np.mean((cnn_predictions - y_test) ** 2))
 
-plt.figure(figsize=(6,6))
+cnn_interval_model = build_binned_interval_model(
+    y_test, cnn_predictions, n_bins=25, use_quantile_bins=True
+)
+cnn_q95_each, _ = lookup_binned_q95(cnn_predictions, cnn_interval_model)
+
+plt.figure(figsize=(6, 6))
 plt.errorbar(
     y_test,
-    predictions,
+    cnn_predictions,
     xerr=y_test_err,
     ms=2,
     capsize=2,
@@ -219,55 +316,125 @@ plt.errorbar(
     ecolor='gray',
     color=colors["steel_blue"],
 )
-plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
+plt.plot([0, 1], [0, 1], color=colors['firebrick_red'], linewidth=2)
 plt.xlabel("Target Committor")
 plt.ylabel("Predicted Committor")
 plt.title(f"β = {beta:.3f}, h = {h:.3f}")
-plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
-         verticalalignment='top', horizontalalignment='left',
-         bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+plt.text(
+    0.05, 0.95, f"RMSE = {cnn_rmse:.4f}",
+    transform=plt.gca().transAxes,
+    verticalalignment='top',
+    horizontalalignment='left',
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
+)
 plt.tight_layout()
-plt.savefig(plot_dir / "predicted_cnn.pdf")
+plt.savefig(plot_dir / "predicted_cnn.svg")
 plt.close()
-print(f"Saved CNN prediction plot to {plot_dir}/predicted_cnn.pdf")
+print(f"Saved CNN prediction plot to {plot_dir}/predicted_cnn.svg")
 
-# =======================
-# --- Sigmoid Predictions with best/worst highlights ---
-# =======================
-predictions = sigmoid(attrs[test_idx][:, 1], *popt)
-rmse = np.sqrt(np.mean((predictions - y_test) ** 2))
-errors = np.abs(predictions - y_test)
-worst_idx = np.argmax(errors)
-mask = (y_test >= 0.2) & (y_test <= 0.8)
-best_idx = np.argmin(errors[mask]) if np.any(mask) else np.argmin(errors)
-best_idx = np.arange(len(y_test))[mask][best_idx] if np.any(mask) else best_idx
-
-plt.figure(figsize=(6,6))
-plt.errorbar(
-    y_test,
-    predictions,
-    xerr=y_test_err,
-    ms=2,
-    capsize=2,
-    alpha=0.5,
-    fmt='o',
-    ecolor='gray',
-    color=colors["steel_blue"],
+# Connected bounded plot: x = mean target, y = mean prediction
+x_cnn, y_cnn, lower_cnn, upper_cnn = make_bounded_curve_from_bins(
+    y_test, cnn_predictions, cnn_interval_model
 )
-plt.plot([0,1],[0,1], color=colors['firebrick_red'], linewidth=2)
-plt.scatter(y_test[worst_idx], predictions[worst_idx], s=80, facecolors='none', edgecolors=colors['orange'], linewidths=2, label='Worst', zorder=10)
-plt.scatter(y_test[best_idx], predictions[best_idx], s=80, facecolors='none', edgecolors=colors['light_green'], linewidths=2, label='Best', zorder=10)
-plt.xlabel("Target Committor")
-plt.ylabel("Predicted Committor")
-plt.title(f"β = {beta:.3f}, h = {h:.3f}")
-plt.text(0.05, 0.95, f"RMSE = {rmse:.4f}", transform=plt.gca().transAxes,
-         verticalalignment='top', horizontalalignment='left',
-         bbox=dict(boxstyle="round", facecolor="white", alpha=0.7))
+
+plt.figure(figsize=(6, 6))
+plt.fill_between(
+    x_cnn, lower_cnn, upper_cnn,
+    alpha=0.25, color=colors["steel_blue"], label="95% interval"
+)
+plt.plot(x_cnn, y_cnn, linewidth=2, color=colors["steel_blue"], label="Mean prediction")
+plt.scatter(x_cnn, y_cnn, s=20, color=colors["steel_blue"], zorder=3)
+plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1.5, color=colors["firebrick_red"], label="Ideal")
+plt.xlabel("Mean Target Committor")
+plt.ylabel("Mean Predicted Committor")
+plt.title(f"CNN 95% interval, β = {beta:.3f}, h = {h:.3f}")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
 plt.legend()
 plt.tight_layout()
-plt.savefig(plot_dir / "predicted_cluster.pdf")
+plt.savefig(plot_dir / "cnn_bounded_95ci.svg")
 plt.close()
-print(f"Saved sigmoid prediction plot to {plot_dir}/predicted_cluster.pdf")
+print(f"Saved CNN bounded 95% interval plot to {plot_dir}/cnn_bounded_95ci.svg")
+
+# =======================
+# --- Sigmoid/Cluster Predictions with best/worst highlights ---
+# =======================
+cluster_predictions = sigmoid(attrs[test_idx][:, 1], *popt)
+cluster_rmse = np.sqrt(np.mean((cluster_predictions - y_test) ** 2))
+cluster_errors = np.abs(cluster_predictions - y_test)
+
+cluster_interval_model = build_binned_interval_model(
+    y_test, cluster_predictions, n_bins=25, use_quantile_bins=True
+)
+cluster_q95_each, _ = lookup_binned_q95(cluster_predictions, cluster_interval_model)
+
+worst_idx = np.argmax(cluster_errors)
+mask = (y_test >= 0.2) & (y_test <= 0.8)
+best_idx = np.argmin(cluster_errors[mask]) if np.any(mask) else np.argmin(cluster_errors)
+best_idx = np.arange(len(y_test))[mask][best_idx] if np.any(mask) else best_idx
+
+plt.figure(figsize=(6, 6))
+plt.errorbar(
+    y_test,
+    cluster_predictions,
+    xerr=y_test_err,
+    ms=2,
+    capsize=2,
+    alpha=0.5,
+    fmt='o',
+    ecolor='gray',
+    color=colors["steel_blue"],
+)
+plt.plot([0, 1], [0, 1], color=colors['firebrick_red'], linewidth=2)
+plt.scatter(
+    y_test[worst_idx], cluster_predictions[worst_idx],
+    s=80, facecolors='none', edgecolors=colors['orange'],
+    linewidths=2, label='Worst', zorder=10
+)
+plt.scatter(
+    y_test[best_idx], cluster_predictions[best_idx],
+    s=80, facecolors='none', edgecolors=colors['light_green'],
+    linewidths=2, label='Best', zorder=10
+)
+plt.xlabel("Target Committor")
+plt.ylabel("Predicted Committor")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
+plt.text(
+    0.05, 0.95, f"RMSE = {cluster_rmse:.4f}",
+    transform=plt.gca().transAxes,
+    verticalalignment='top',
+    horizontalalignment='left',
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
+)
+plt.legend()
+plt.tight_layout()
+plt.savefig(plot_dir / "predicted_cluster.svg")
+plt.close()
+print(f"Saved sigmoid prediction plot to {plot_dir}/predicted_cluster.svg")
+
+# Connected bounded plot: x = mean target, y = mean prediction
+x_cl, y_cl, lower_cl, upper_cl = make_bounded_curve_from_bins(
+    y_test, cluster_predictions, cluster_interval_model
+)
+
+plt.figure(figsize=(6, 6))
+plt.fill_between(
+    x_cl, lower_cl, upper_cl,
+    alpha=0.25, color=colors["forest_green"], label="95% interval"
+)
+plt.plot(x_cl, y_cl, linewidth=2, color=colors["forest_green"], label="Mean prediction")
+plt.scatter(x_cl, y_cl, s=20, color=colors["forest_green"], zorder=3)
+plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1.5, color=colors["firebrick_red"], label="Ideal")
+plt.xlabel("Mean Target Committor")
+plt.ylabel("Mean Predicted Committor")
+plt.title(f"Cluster 95% interval, β = {beta:.3f}, h = {h:.3f}")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
+plt.legend()
+plt.tight_layout()
+plt.savefig(plot_dir / "cluster_bounded_95ci.svg")
+plt.close()
+print(f"Saved cluster bounded 95% interval plot to {plot_dir}/cluster_bounded_95ci.svg")
 
 # =======================
 # --- Saliency Plot: Best & Worst Predictions ---
@@ -277,17 +444,16 @@ def compute_saliency(idx):
     x, _ = test_ds[idx]
     x_grid = x.squeeze(0).cpu().numpy()
 
-    # Center largest cluster
     labeled_array, num_features = label(x_grid > 0)
     if num_features > 0:
-        cluster_sizes = [(labeled_array == i+1).sum() for i in range(num_features)]
+        cluster_sizes = [(labeled_array == i + 1).sum() for i in range(num_features)]
         largest_idx = np.argmax(cluster_sizes)
         cluster_mask = (labeled_array == largest_idx + 1)
         coords = np.argwhere(cluster_mask)
         center_y, center_x = coords.mean(axis=0)
-        shift_y = int(x_grid.shape[0]//2 - center_y)
-        shift_x = int(x_grid.shape[1]//2 - center_x)
-        x_rolled = np.roll(x_grid, shift=(shift_y, shift_x), axis=(0,1))
+        shift_y = int(x_grid.shape[0] // 2 - center_y)
+        shift_x = int(x_grid.shape[1] // 2 - center_x)
+        x_rolled = np.roll(x_grid, shift=(shift_y, shift_x), axis=(0, 1))
     else:
         x_rolled = x_grid
 
@@ -304,7 +470,13 @@ def compute_saliency(idx):
     uniform_factor = 1.25 * uniform_min
     alpha = np.zeros_like(grad_norm)
     mask = grad_norm > uniform_factor
-    alpha[mask] = 0.1 + 0.9 * (grad_norm[mask] - uniform_factor) / (grad_norm[mask].max() - uniform_factor)
+
+    if np.any(mask):
+        denom = grad_norm[mask].max() - uniform_factor
+        if denom > 0:
+            alpha[mask] = 0.1 + 0.9 * (grad_norm[mask] - uniform_factor) / denom
+        else:
+            alpha[mask] = 1.0
 
     saliency_overlay = np.zeros((*grad.shape, 4))
     saliency_overlay[..., 0] = 1.0
@@ -314,92 +486,105 @@ def compute_saliency(idx):
 
     return x_rolled, saliency_overlay
 
-# Compute saliency for best and worst predictions
 best_grid, best_saliency = compute_saliency(best_idx)
 worst_grid, worst_saliency = compute_saliency(worst_idx)
 
-# Plot side-by-side
-fig, axes = plt.subplots(1, 2, figsize=(12,6))
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 for ax, idx, grid, saliency, title in zip(
-        axes, [best_idx, worst_idx], 
-        [best_grid, worst_grid], [best_saliency, worst_saliency], 
-        ['Best Prediction', 'Worst Prediction']):
-    
-    # Plot saliency overlay
+    axes,
+    [best_idx, worst_idx],
+    [best_grid, worst_grid],
+    [best_saliency, worst_saliency],
+    ['Best Prediction', 'Worst Prediction']
+):
     up_coords = np.argwhere(grid > 0)
-    ax.scatter(up_coords[:,1], up_coords[:,0], marker='x', color='black', s=25, linewidth=1, zorder=2)
+    ax.scatter(up_coords[:, 1], up_coords[:, 0], marker='x', color='black', s=25, linewidth=1, zorder=2)
     ax.imshow(saliency, interpolation='bicubic', zorder=1)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_title(title)
-    
-    # Compute predictions
+
     actual = y_test[idx]
     actual_err = attrs[test_idx][idx, 3]
-    sigmoid_pred = sigmoid(attrs[test_idx][idx, 1], *popt)
-    cnn_input = torch.stack([test_ds[idx][0]]).to(device)
-    with torch.no_grad():
-        cnn_pred = model(cnn_input).squeeze().item()
-    
-    # Prepare table data
+
+    sigmoid_pred = cluster_predictions[idx]
+    sigmoid_err95, _ = lookup_binned_q95(np.array([sigmoid_pred]), cluster_interval_model)
+    sigmoid_err95 = float(sigmoid_err95[0])
+
+    cnn_pred = cnn_predictions[idx]
+    cnn_err95, _ = lookup_binned_q95(np.array([cnn_pred]), cnn_interval_model)
+    cnn_err95 = float(cnn_err95[0])
+
     table_data = [
-        ["Actual",   f"{actual:6.3f} ±{actual_err:6.3f}"],
-        ["Sigmoid",  f"{sigmoid_pred:6.3f}"],
-        ["CNN",      f"{cnn_pred:6.3f}"]
+        ["Actual",  f"{actual:6.3f} ± {actual_err:6.3f}"],
+        ["Cluster", f"{sigmoid_pred:6.3f} ± {sigmoid_err95:6.3f}"],
+        ["CNN",     f"{cnn_pred:6.3f} ± {cnn_err95:6.3f}"],
     ]
 
-    # Create table
     the_table = ax.table(
         cellText=table_data,
         colWidths=[0.6, 0.5],
         cellLoc='left',
         loc='bottom',
-        bbox=[0.15, -0.25, 0.5, 0.2]   # [left, bottom, width, height] in Axes coords
+        bbox=[0.15, -0.25, 0.5, 0.2]
     )
 
-    # Remove all lines (make them transparent)
     for _, cell in the_table.get_celld().items():
         cell.set_edgecolor('none')
 
-    # Optional: tweak text size
     the_table.auto_set_font_size(False)
     the_table.set_fontsize(16)
 
-
-# Reduce horizontal space between subplots
-plt.subplots_adjust(wspace=0.4)  # default ~0.4, smaller brings them closer
-
-plt.savefig(plot_dir / f"{config.model.type}_saliency.pdf", bbox_inches="tight")
+plt.subplots_adjust(wspace=0.4)
+plt.savefig(plot_dir / f"{config.model.type}_saliency.svg", bbox_inches="tight")
 plt.close()
-print(f"Saved saliency plot (best & worst) to {plot_dir}/{config.model.type}_saliency.pdf")
+print(f"Saved saliency plot (best & worst) to {plot_dir}/{config.model.type}_saliency.svg")
 
 # Plot only the worst prediction
-fig, ax = plt.subplots(1, 1, figsize=(6,6))
-
-# Plot saliency overlay
+fig, ax = plt.subplots(1, 1, figsize=(6, 6))
 up_coords = np.argwhere(worst_grid > 0)
-ax.scatter(up_coords[:,1], up_coords[:,0], marker='x', color='black', s=25, linewidth=1, zorder=2)
+ax.scatter(up_coords[:, 1], up_coords[:, 0], marker='x', color='black', s=35, linewidth=1, zorder=2)
 ax.imshow(worst_saliency, interpolation='bicubic', zorder=1)
 ax.set_xticks([])
 ax.set_yticks([])
 
-# Compute predictions
 actual = y_test[worst_idx]
 actual_err = attrs[test_idx][worst_idx, 3]
-sigmoid_pred = sigmoid(attrs[test_idx][worst_idx, 1], *popt)
-cnn_input = torch.stack([test_ds[worst_idx][0]]).to(device)
-with torch.no_grad():
-    cnn_pred = model(cnn_input).squeeze().item()
 
-# Remove all lines
+sigmoid_pred = cluster_predictions[worst_idx]
+sigmoid_err95, _ = lookup_binned_q95(np.array([sigmoid_pred]), cluster_interval_model)
+sigmoid_err95 = float(sigmoid_err95[0])
+
+cnn_pred = cnn_predictions[worst_idx]
+cnn_err95, _ = lookup_binned_q95(np.array([cnn_pred]), cnn_interval_model)
+cnn_err95 = float(cnn_err95[0])
+
+table_data = [
+    ["Actual",  f"{actual:6.3f} ± {actual_err:6.3f}"],
+    ["Cluster", f"{sigmoid_pred:6.3f} ± {sigmoid_err95:6.3f}"],
+    ["CNN",     f"{cnn_pred:6.3f} ± {cnn_err95:6.3f}"],
+]
+
+the_table = ax.table(
+    cellText=table_data,
+    colWidths=[0.6, 0.5],
+    cellLoc='left',
+    loc='bottom',
+    bbox=[0.18, -0.25, 0.56, 0.2]
+)
+
 for _, cell in the_table.get_celld().items():
     cell.set_edgecolor('none')
 
-plt.savefig(plot_dir / f"{config.model.type}_worst_saliency.pdf", bbox_inches="tight")
+the_table.auto_set_font_size(False)
+the_table.set_fontsize(16)
+
+plt.savefig(plot_dir / f"{config.model.type}_worst_saliency.svg", bbox_inches="tight")
 plt.close()
-print(f"Saved saliency plot (worst) to {plot_dir}/{config.model.type}_worst_saliency.pdf")
+print(f"Saved saliency plot (worst) to {plot_dir}/{config.model.type}_worst_saliency.svg")
 
 exit()
+
 # =======================
 # --- Spatial Invariance Test ---
 # =======================
@@ -525,9 +710,9 @@ with torch.no_grad():
         x=0.5, ha="center", y=-0.1, fontsize=25
     )
 
-    plt.savefig(plot_dir / "valid_invariance_test.pdf", bbox_inches="tight")
+    plt.savefig(plot_dir / "valid_invariance_test.svg", bbox_inches="tight")
     plt.close()
-    print(f"Saved invariance test plot to {plot_dir}/valid_invariance_test.pdf")
+    print(f"Saved invariance test plot to {plot_dir}/valid_invariance_test.svg")
 
 # 2x2 subplot
 fig, axes = plt.subplots(2, 2, figsize=(10, 10))
@@ -542,6 +727,6 @@ for ax, img, title in zip(axes.flat, images, titles):
     ax.set_aspect('equal')
 
 plt.tight_layout()
-plt.savefig(plot_dir / "invariance_2x2.pdf", bbox_inches="tight")
+plt.savefig(plot_dir / "invariance_2x2.svg", bbox_inches="tight")
 plt.close()
-print(f"Saved 2x2 invariance test plot to {plot_dir}/invariance_2x2.pdf")
+print(f"Saved 2x2 invariance test plot to {plot_dir}/invariance_2x2.svg")
