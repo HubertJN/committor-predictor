@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
@@ -49,6 +50,8 @@ plt.rcParams.update(
         "figure.titlesize": FONT_SIZE * 1.1,
     }
 )
+
+mpl.rcParams["svg.fonttype"] = "none"
 
 
 def load_runs_from_csv(csv_path: str | Path) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
@@ -161,6 +164,92 @@ def fraction_outside_band(y_true: np.ndarray, y_pred: np.ndarray, percent: float
     return float(np.mean(diff > band))
 
 
+def _save_data_cache(cache_path: str | Path, data: dict) -> None:
+    """Save collected data to NPZ cache file."""
+    cache_path = Path(cache_path)
+    
+    # Prepare predictions data for NPZ storage
+    all_preds = data["all_predictions"]
+    pred_keys = []  # Store (beta, h) tuples
+    pred_y_true = []
+    pred_y_pred = []
+    pred_y_pred_cluster = []
+    
+    for (beta, h), (y_true, y_pred, y_pred_cluster) in all_preds.items():
+        pred_keys.append([beta, h])
+        pred_y_true.append(y_true)
+        pred_y_pred.append(y_pred)
+        pred_y_pred_cluster.append(y_pred_cluster)
+    
+    np.savez_compressed(
+        str(cache_path),
+        betas=np.array(data["betas"]),
+        fractions_cnn=np.array(data["fractions_cnn"]),
+        fractions_cluster=np.array(data["fractions_cluster"]),
+        betas_new=np.array(data["betas_new"]),
+        fractions_cnn_new=np.array(data["fractions_cnn_new"]),
+        fractions_cluster_new=np.array(data["fractions_cluster_new"]),
+        betas_newer=np.array(data["betas_newer"]),
+        fractions_cnn_newer=np.array(data["fractions_cnn_newer"]),
+        fractions_cluster_newer=np.array(data["fractions_cluster_newer"]),
+        worst_cnn_fraction=np.array([data["worst_cnn_fraction"]]),
+        worst_cnn_beta=np.array([data["worst_cnn_beta"]]),
+        worst_cnn_h=np.array([data["worst_cnn_h"]]),
+        worst_cluster_fraction=np.array([data["worst_cluster_fraction"]]),
+        worst_cluster_beta=np.array([data["worst_cluster_beta"]]),
+        worst_cluster_h=np.array([data["worst_cluster_h"]]),
+        pred_keys=np.array(pred_keys),
+        pred_y_true=np.array(pred_y_true, dtype=object),
+        pred_y_pred=np.array(pred_y_pred, dtype=object),
+        pred_y_pred_cluster=np.array(pred_y_pred_cluster, dtype=object),
+    )
+    print(f"Saved data cache to {cache_path}")
+
+
+def _load_data_cache(cache_path: str | Path) -> dict | None:
+    """Load collected data from NPZ cache file. Returns None if cache doesn't exist."""
+    cache_path = Path(cache_path)
+    if not cache_path.exists():
+        return None
+    
+    try:
+        cached = np.load(str(cache_path), allow_pickle=True)
+        
+        # Reconstruct predictions dict from NPZ data
+        all_predictions = {}
+        for i, (beta, h) in enumerate(cached["pred_keys"]):
+            key = (float(beta), float(h))
+            all_predictions[key] = (
+                cached["pred_y_true"][i].astype(np.float64),
+                cached["pred_y_pred"][i].astype(np.float64),
+                cached["pred_y_pred_cluster"][i].astype(np.float64),
+            )
+        
+        data = {
+            "betas": cached["betas"].tolist(),
+            "fractions_cnn": cached["fractions_cnn"].tolist(),
+            "fractions_cluster": cached["fractions_cluster"].tolist(),
+            "betas_new": cached["betas_new"].tolist(),
+            "fractions_cnn_new": cached["fractions_cnn_new"].tolist(),
+            "fractions_cluster_new": cached["fractions_cluster_new"].tolist(),
+            "betas_newer": cached["betas_newer"].tolist(),
+            "fractions_cnn_newer": cached["fractions_cnn_newer"].tolist(),
+            "fractions_cluster_newer": cached["fractions_cluster_newer"].tolist(),
+            "worst_cnn_fraction": float(cached["worst_cnn_fraction"][0]),
+            "worst_cnn_beta": float(cached["worst_cnn_beta"][0]),
+            "worst_cnn_h": float(cached["worst_cnn_h"][0]),
+            "worst_cluster_fraction": float(cached["worst_cluster_fraction"][0]),
+            "worst_cluster_beta": float(cached["worst_cluster_beta"][0]),
+            "worst_cluster_h": float(cached["worst_cluster_h"][0]),
+            "all_predictions": all_predictions,
+        }
+        print(f"Loaded data cache from {cache_path}")
+        return data
+    except Exception as e:
+        print(f"Failed to load cache: {e}")
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")
@@ -173,8 +262,10 @@ def main() -> None:
         help="Band definition; default matches 'percent of the prediction'",
     )
     parser.add_argument("--chunk-size", type=int, default=1024, help="Inference chunk size")
-    parser.add_argument("--out", type=str, default="diff_metric_vs_beta.pdf", help="Output filename")
+    parser.add_argument("--out", type=str, default="diff_metric_vs_beta.svg", help="Output filename")
     parser.add_argument("--csv", type=str, default="h_beta_dn_up.csv", help="Path to CSV file with h,beta,dn,up columns")
+    parser.add_argument("--data-cache", type=str, default="diff_metric_data.npz", help="Path to data cache file")
+    parser.add_argument("--regenerate", action="store_true", default=False, help="Regenerate data cache instead of loading from disk")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -185,223 +276,276 @@ def main() -> None:
     if not RUNS:
         raise ValueError("No runs loaded from CSV. Check CSV file format.")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    fractions_cnn: list[float] = []
-    fractions_cluster: list[float] = []
-    betas: list[float] = []
+    # Try to load cached data
+    use_cache = not args.regenerate
+    cache_path = Path(config.paths.plot_dir) / args.data_cache
     
-    fractions_cnn_new: list[float] = []
-    fractions_cluster_new: list[float] = []
-    betas_new: list[float] = []
-
-    fractions_cnn_newer: list[float] = []
-    fractions_cluster_newer: list[float] = []
-    betas_newer: list[float] = []
+    if use_cache:
+        cached_data = _load_data_cache(cache_path)
+    else:
+        cached_data = None
     
-    # Track all predictions for potential second plot
-    all_predictions: dict[tuple[float, float], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    worst_cnn_fraction = -1.0
-    worst_cnn_beta = None
-    worst_cnn_h = None
-    worst_cluster_fraction = -1.0
-    worst_cluster_beta = None
-    worst_cluster_h = None
+    if cached_data is not None:
+        # Use cached data
+        fractions_cnn = cached_data["fractions_cnn"]
+        fractions_cluster = cached_data["fractions_cluster"]
+        betas = cached_data["betas"]
+        fractions_cnn_new = cached_data["fractions_cnn_new"]
+        fractions_cluster_new = cached_data["fractions_cluster_new"]
+        betas_new = cached_data["betas_new"]
+        fractions_cnn_newer = cached_data["fractions_cnn_newer"]
+        fractions_cluster_newer = cached_data["fractions_cluster_newer"]
+        betas_newer = cached_data["betas_newer"]
+        all_predictions = cached_data["all_predictions"]
+        worst_cnn_fraction = cached_data["worst_cnn_fraction"]
+        worst_cnn_beta = cached_data["worst_cnn_beta"]
+        worst_cnn_h = cached_data["worst_cnn_h"]
+        worst_cluster_fraction = cached_data["worst_cluster_fraction"]
+        worst_cluster_beta = cached_data["worst_cluster_beta"]
+        worst_cluster_h = cached_data["worst_cluster_h"]
+    else:
+        # Collect data from scratch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    for run in RUNS:
-        beta = float(run[0])
-        h = float(run[1])
-
-        # Dataset (uses the same naming convention as generate_plots.py)
-        h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
-        print(f"Loading dataset from {h5path}...")
-
-        grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
-        _, _, _, _, _, test_ds = prepare_datasets(
-            grids,
-            attrs,
-            train_idx,
-            valid_idx,
-            test_idx,
-            device,
-            config.dataset.batch_size,
-            augment=False,
-        )
-
-        # Model checkpoint (uses the same naming convention as generate_plots.py)
-        checkpoint_path = (
-            f"{config.paths.save_dir}/"
-            f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
-            f"{beta:.3f}_{h:.3f}.pth"
-        )
-        print(f"Loading model from {checkpoint_path}...")
-        model = _load_model_from_checkpoint(checkpoint_path, device=device)
-
-        # Targets and predictions on TEST
-        y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
-        y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
-
-        # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
-        test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
-        k, x0 = fit_sigmoid(test_cluster_size, y_true)
-        y_pred_cluster = sigmoid(test_cluster_size, k, x0)
-
-        frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
-        frac_cluster = fraction_outside_band(
-            y_true=y_true,
-            y_pred=y_pred_cluster,
-            percent=float(args.percent),
-            mode=str(args.mode),
-        )
-        print(
-            f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-            f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
-        )
-
-        betas.append(beta)
-        fractions_cnn.append(frac_cnn)
-        fractions_cluster.append(frac_cluster)
-        all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+        fractions_cnn: list[float] = []
+        fractions_cluster: list[float] = []
+        betas: list[float] = []
         
-        # Track worst CNN and cluster fractions separately
-        if frac_cnn > worst_cnn_fraction:
-            worst_cnn_fraction = frac_cnn
-            worst_cnn_beta = beta
-            worst_cnn_h = h
-        if frac_cluster > worst_cluster_fraction:
-            worst_cluster_fraction = frac_cluster
-            worst_cluster_beta = beta
-            worst_cluster_h = h
+        fractions_cnn_new: list[float] = []
+        fractions_cluster_new: list[float] = []
+        betas_new: list[float] = []
 
-    for run in RUNS_NEW:
-        beta = float(run[0])
-        h = float(run[1])
-
-        # Dataset (uses the same naming convention as generate_plots.py)
-        h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
-        print(f"Loading dataset from {h5path}...")
-
-        grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
-        _, _, _, _, _, test_ds = prepare_datasets(
-            grids,
-            attrs,
-            train_idx,
-            valid_idx,
-            test_idx,
-            device,
-            config.dataset.batch_size,
-            augment=False,
-        )
-
-        # Model checkpoint (uses the same naming convention as generate_plots.py)
-        checkpoint_path = (
-            f"{config.paths.save_dir}/"
-            f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
-            f"{beta:.3f}_{h:.3f}.pth"
-        )
-        print(f"Loading model from {checkpoint_path}...")
-        model = _load_model_from_checkpoint(checkpoint_path, device=device)
-
-        # Targets and predictions on TEST
-        y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
-        y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
-
-        # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
-        test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
-        k, x0 = fit_sigmoid(test_cluster_size, y_true)
-        y_pred_cluster = sigmoid(test_cluster_size, k, x0)
-
-        frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
-        frac_cluster = fraction_outside_band(
-            y_true=y_true,
-            y_pred=y_pred_cluster,
-            percent=float(args.percent),
-            mode=str(args.mode),
-        )
-        print(
-            f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-            f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
-        )
-
-        betas_new.append(beta)
-        fractions_cnn_new.append(frac_cnn)
-        fractions_cluster_new.append(frac_cluster)
-        all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+        fractions_cnn_newer: list[float] = []
+        fractions_cluster_newer: list[float] = []
+        betas_newer: list[float] = []
         
-        # Track worst CNN and cluster fractions separately
-        if frac_cnn > worst_cnn_fraction:
-            worst_cnn_fraction = frac_cnn
-            worst_cnn_beta = beta
-            worst_cnn_h = h
-        if frac_cluster > worst_cluster_fraction:
-            worst_cluster_fraction = frac_cluster
-            worst_cluster_beta = beta
-            worst_cluster_h = h
+        # Track all predictions for potential second plot
+        all_predictions: dict[tuple[float, float], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        worst_cnn_fraction = -1.0
+        worst_cnn_beta = None
+        worst_cnn_h = None
+        worst_cluster_fraction = -1.0
+        worst_cluster_beta = None
+        worst_cluster_h = None
 
-    for run in RUNS_NEWER:
-        beta = float(run[0])
-        h = float(run[1])
+        for run in RUNS:
+            beta = float(run[0])
+            h = float(run[1])
 
-        # Dataset (uses the same naming convention as generate_plots.py)
-        h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
-        print(f"Loading dataset from {h5path}...")
+            # Dataset (uses the same naming convention as generate_plots.py)
+            h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+            print(f"Loading dataset from {h5path}...")
 
-        grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
-        _, _, _, _, _, test_ds = prepare_datasets(
-            grids,
-            attrs,
-            train_idx,
-            valid_idx,
-            test_idx,
-            device,
-            config.dataset.batch_size,
-            augment=False,
-        )
+            grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
+            _, _, _, _, _, test_ds = prepare_datasets(
+                grids,
+                attrs,
+                train_idx,
+                valid_idx,
+                test_idx,
+                device,
+                config.dataset.batch_size,
+                augment=False,
+            )
 
-        # Model checkpoint (uses the same naming convention as generate_plots.py)
-        checkpoint_path = (
-            f"{config.paths.save_dir}/"
-            f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
-            f"{beta:.3f}_{h:.3f}.pth"
-        )
-        print(f"Loading model from {checkpoint_path}...")
-        model = _load_model_from_checkpoint(checkpoint_path, device=device)
+            # Model checkpoint (uses the same naming convention as generate_plots.py)
+            checkpoint_path = (
+                f"{config.paths.save_dir}/"
+                f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
+                f"{beta:.3f}_{h:.3f}.pth"
+            )
+            print(f"Loading model from {checkpoint_path}...")
+            model = _load_model_from_checkpoint(checkpoint_path, device=device)
 
-        # Targets and predictions on TEST
-        y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
-        y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
+            # Targets and predictions on TEST
+            y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
+            y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
 
-        # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
-        test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
-        k, x0 = fit_sigmoid(test_cluster_size, y_true)
-        y_pred_cluster = sigmoid(test_cluster_size, k, x0)
+            # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
+            test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
+            k, x0 = fit_sigmoid(test_cluster_size, y_true)
+            y_pred_cluster = sigmoid(test_cluster_size, k, x0)
 
-        frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
-        frac_cluster = fraction_outside_band(
-            y_true=y_true,
-            y_pred=y_pred_cluster,
-            percent=float(args.percent),
-            mode=str(args.mode),
-        )
-        print(
-            f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-            f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
-        )
+            frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
+            frac_cluster = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_cluster,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
+            print(
+                f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
+                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+            )
 
-        betas_newer.append(beta)
-        fractions_cnn_newer.append(frac_cnn)
-        fractions_cluster_newer.append(frac_cluster)
-        all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            betas.append(beta)
+            fractions_cnn.append(frac_cnn)
+            fractions_cluster.append(frac_cluster)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            
+            # Track worst CNN and cluster fractions separately
+            if frac_cnn > worst_cnn_fraction:
+                worst_cnn_fraction = frac_cnn
+                worst_cnn_beta = beta
+                worst_cnn_h = h
+            if frac_cluster > worst_cluster_fraction:
+                worst_cluster_fraction = frac_cluster
+                worst_cluster_beta = beta
+                worst_cluster_h = h
+
+        for run in RUNS_NEW:
+            beta = float(run[0])
+            h = float(run[1])
+
+            # Dataset (uses the same naming convention as generate_plots.py)
+            h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+            print(f"Loading dataset from {h5path}...")
+
+            grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
+            _, _, _, _, _, test_ds = prepare_datasets(
+                grids,
+                attrs,
+                train_idx,
+                valid_idx,
+                test_idx,
+                device,
+                config.dataset.batch_size,
+                augment=False,
+            )
+
+            # Model checkpoint (uses the same naming convention as generate_plots.py)
+            checkpoint_path = (
+                f"{config.paths.save_dir}/"
+                f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
+                f"{beta:.3f}_{h:.3f}.pth"
+            )
+            print(f"Loading model from {checkpoint_path}...")
+            model = _load_model_from_checkpoint(checkpoint_path, device=device)
+
+            # Targets and predictions on TEST
+            y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
+            y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
+
+            # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
+            test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
+            k, x0 = fit_sigmoid(test_cluster_size, y_true)
+            y_pred_cluster = sigmoid(test_cluster_size, k, x0)
+
+            frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
+            frac_cluster = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_cluster,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
+            print(
+                f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
+                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+            )
+
+            betas_new.append(beta)
+            fractions_cnn_new.append(frac_cnn)
+            fractions_cluster_new.append(frac_cluster)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            
+            # Track worst CNN and cluster fractions separately
+            if frac_cnn > worst_cnn_fraction:
+                worst_cnn_fraction = frac_cnn
+                worst_cnn_beta = beta
+                worst_cnn_h = h
+            if frac_cluster > worst_cluster_fraction:
+                worst_cluster_fraction = frac_cluster
+                worst_cluster_beta = beta
+                worst_cluster_h = h
+
+        for run in RUNS_NEWER:
+            beta = float(run[0])
+            h = float(run[1])
+
+            # Dataset (uses the same naming convention as generate_plots.py)
+            h5path = f"../data/gridstates_training_{beta:.3f}_{h:.3f}.hdf5"
+            print(f"Loading dataset from {h5path}...")
+
+            grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(h5path, test_size=config.dataset.test_size)
+            _, _, _, _, _, test_ds = prepare_datasets(
+                grids,
+                attrs,
+                train_idx,
+                valid_idx,
+                test_idx,
+                device,
+                config.dataset.batch_size,
+                augment=False,
+            )
+
+            # Model checkpoint (uses the same naming convention as generate_plots.py)
+            checkpoint_path = (
+                f"{config.paths.save_dir}/"
+                f"{config.model.type}_ch{config.model.channels}_cn{config.model.num_cnn_layers}_fc{config.model.num_fc_layers}_"
+                f"{beta:.3f}_{h:.3f}.pth"
+            )
+            print(f"Loading model from {checkpoint_path}...")
+            model = _load_model_from_checkpoint(checkpoint_path, device=device)
+
+            # Targets and predictions on TEST
+            y_true = np.array([test_ds[i][1].item() for i in range(len(test_ds))], dtype=float)
+            y_pred = _predict_on_dataset(model, test_ds, device=device, chunk_size=int(args.chunk_size))
+
+            # Cluster-size baseline on TEST (fit sigmoid to (cluster_size -> committor) on the test set)
+            test_cluster_size = np.asarray(attrs[test_idx, 1], dtype=float)
+            k, x0 = fit_sigmoid(test_cluster_size, y_true)
+            y_pred_cluster = sigmoid(test_cluster_size, k, x0)
+
+            frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
+            frac_cluster = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_cluster,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
+            print(
+                f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
+                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+            )
+
+            betas_newer.append(beta)
+            fractions_cnn_newer.append(frac_cnn)
+            fractions_cluster_newer.append(frac_cluster)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            
+            # Track worst CNN and cluster fractions separately
+            if frac_cnn > worst_cnn_fraction:
+                worst_cnn_fraction = frac_cnn
+                worst_cnn_beta = beta
+                worst_cnn_h = h
+            if frac_cluster > worst_cluster_fraction:
+                worst_cluster_fraction = frac_cluster
+                worst_cluster_beta = beta
+                worst_cluster_h = h
         
-        # Track worst CNN and cluster fractions separately
-        if frac_cnn > worst_cnn_fraction:
-            worst_cnn_fraction = frac_cnn
-            worst_cnn_beta = beta
-            worst_cnn_h = h
-        if frac_cluster > worst_cluster_fraction:
-            worst_cluster_fraction = frac_cluster
-            worst_cluster_beta = beta
-            worst_cluster_h = h
+        # Save data cache
+        _save_data_cache(
+            cache_path,
+            {
+                "betas": betas,
+                "fractions_cnn": fractions_cnn,
+                "fractions_cluster": fractions_cluster,
+                "betas_new": betas_new,
+                "fractions_cnn_new": fractions_cnn_new,
+                "fractions_cluster_new": fractions_cluster_new,
+                "betas_newer": betas_newer,
+                "fractions_cnn_newer": fractions_cnn_newer,
+                "fractions_cluster_newer": fractions_cluster_newer,
+                "worst_cnn_fraction": worst_cnn_fraction,
+                "worst_cnn_beta": worst_cnn_beta,
+                "worst_cnn_h": worst_cnn_h,
+                "worst_cluster_fraction": worst_cluster_fraction,
+                "worst_cluster_beta": worst_cluster_beta,
+                "worst_cluster_h": worst_cluster_h,
+                "all_predictions": all_predictions,
+            },
+        )
+    
     out_dir = Path(config.paths.plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / args.out
@@ -427,27 +571,27 @@ def main() -> None:
     
     # Lowest h runs (blue)
     ax.plot(betas_sorted, cluster_sorted, color=colors["light_steel_blue"], linewidth=2, alpha=0.8, zorder=1)
-    ax.scatter(betas_sorted, cluster_sorted, s=60, marker="o", color=colors["steel_blue"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted, cluster_sorted, s=60, marker="s", color=colors["steel_blue"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted, cnn_sorted, color=colors["light_steel_blue"], linewidth=2, alpha=0.8, zorder=1)
-    ax.scatter(betas_sorted, cnn_sorted, s=60, marker="s", color=colors["steel_blue"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted, cnn_sorted, s=60, marker="o", color=colors["steel_blue"], alpha=0.9, zorder=2)
     
     # Middle h runs (green)
     ax.plot(betas_sorted_new, cluster_sorted_new, color=colors["light_green"], linewidth=2, alpha=0.8, linestyle="--", zorder=1)
-    ax.scatter(betas_sorted_new, cluster_sorted_new, s=60, marker="o", color=colors["forest_green"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted_new, cluster_sorted_new, s=60, marker="s", color=colors["forest_green"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted_new, cnn_sorted_new, color=colors["light_green"], linewidth=2, alpha=0.8, linestyle="--", zorder=1)
-    ax.scatter(betas_sorted_new, cnn_sorted_new, s=60, marker="s", color=colors["forest_green"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted_new, cnn_sorted_new, s=60, marker="o", color=colors["forest_green"], alpha=0.9, zorder=2)
 
     # Highest h runs (red)
     ax.plot(betas_sorted_newer, cluster_sorted_newer, color=colors["soft_red"], linewidth=2, alpha=0.8, linestyle=":", zorder=1)
-    ax.scatter(betas_sorted_newer, cluster_sorted_newer, s=60, marker="o", color=colors["firebrick_red"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted_newer, cluster_sorted_newer, s=60, marker="s", color=colors["firebrick_red"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted_newer, cnn_sorted_newer, color=colors["soft_red"], linewidth=2, alpha=0.8, linestyle=":", zorder=1)
-    ax.scatter(betas_sorted_newer, cnn_sorted_newer, s=60, marker="s", color=colors["firebrick_red"], alpha=0.9, zorder=2)
+    ax.scatter(betas_sorted_newer, cnn_sorted_newer, s=60, marker="o", color=colors["firebrick_red"], alpha=0.9, zorder=2)
 
     # Create legend 1: markers (Metric type)
     from matplotlib.lines import Line2D
     marker_handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="black", markersize=10, label="LCS"),
-        Line2D([0], [0], marker="s", color="w", markerfacecolor="black", markersize=10, label="q-NN"),
+        Line2D([0], [0], marker="s", color="w", markerfacecolor="black", markersize=10, label="LCS"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="black", markersize=10, label="q-NN"),
     ]
     legend1 = ax.legend(handles=marker_handles, loc="upper left", bbox_to_anchor=(1.05, 1))
     ax.add_artist(legend1)
@@ -473,46 +617,113 @@ def main() -> None:
 
     print(f"Saved plot to {out_path}")
     
-    # Helper function to create scatter plot
-    def create_scatter_plot(y_true, y_pred, metric_label, beta, h, fraction_outside, args, out_dir, config):
+    # Helper function to create scatter plot with binned and subsampled data
+    def create_scatter_plot(y_true, y_pred, metric_label, beta, h, fraction_outside, args, out_dir, config, highlight_worst=False, highlight_best=False):
         plt.figure(figsize=(5, 5))
         ax = plt.gca()
         
+        # Bin target committor into 50 bins and subsample predictions uniformly
+        n_bins = 50
+        bin_edges = np.linspace(0, 1, n_bins + 1)
+        subsampled_y_true = []
+        subsampled_y_pred = []
+        
+        for i in range(n_bins):
+            # Get indices of points in this bin
+            mask = (y_true >= bin_edges[i]) & (y_true < bin_edges[i + 1])
+            if i == n_bins - 1:  # Last bin includes the right edge
+                mask = (y_true >= bin_edges[i]) & (y_true <= bin_edges[i + 1])
+            
+            bin_indices = np.where(mask)[0]
+            
+            if len(bin_indices) == 0:
+                continue
+            
+            # Get predicted committors for this bin
+            bin_preds = y_pred[bin_indices]
+            bin_true = y_true[bin_indices]
+            
+            # Sort by predicted committor
+            sort_idx = np.argsort(bin_preds)
+            sorted_preds = bin_preds[sort_idx]
+            sorted_true = bin_true[sort_idx]
+            
+            # Uniformly select 50 points including both endpoints
+            n_points = len(sorted_preds)
+            to_sample = 10
+            if n_points <= to_sample:
+                # Include all points if we have 50 or fewer
+                uniform_indices = np.arange(n_points)
+            else:
+                # Uniformly select 50 points from sorted predictions
+                uniform_indices = np.round(np.linspace(0, n_points - 1, to_sample)).astype(int)
+            
+            subsampled_y_true.extend(sorted_true[uniform_indices])
+            subsampled_y_pred.extend(sorted_preds[uniform_indices])
+        
+        subsampled_y_true = np.array(subsampled_y_true)
+        subsampled_y_pred = np.array(subsampled_y_pred)
+        
         # Scatter plot
-        ax.scatter(y_true, y_pred, alpha=0.5, s=30, color=colors["steel_blue"], zorder=1)
+        ax.scatter(subsampled_y_true, subsampled_y_pred, alpha=0.5, s=30, color=colors["steel_blue"], zorder=2)
         
         # Diagonal line (perfect prediction, red, from 0 to 1)
-        ax.plot([0, 1], [0, 1], "-", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=3)
+        ax.plot([0, 1], [0, 1], "-", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=4)
         
-        # Band lines (±2.5%)
+        # Band lines (±percent)
         band_width = float(args.percent) / 100.0
-        upper_band = np.array([y_true - band_width, y_true + band_width])
-        lower_band = np.array([y_true + band_width, y_true - band_width])
+        y_band = np.linspace(0, 1, 100)
+        upper_bound = y_band + band_width
+        lower_bound = y_band - band_width
         
-        # Create smoother band visualization
-        sorted_indices = np.argsort(y_true)
-        y_true_sorted = y_true[sorted_indices]
-        upper_bound = y_true_sorted + band_width
-        lower_bound = y_true_sorted - band_width
+        # Clip band to [0, 1] range
+        upper_bound = np.clip(upper_bound, 0, 1)
+        lower_bound = np.clip(lower_bound, 0, 1)
         
-        ax.plot(y_true_sorted, upper_bound, "--", color=colors["firebrick_red"], linewidth=2, alpha=0.7, label=f"±{args.percent}% band", zorder=3)
-        ax.plot(y_true_sorted, lower_bound, "--", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=3)
-        ax.fill_between(y_true_sorted, lower_bound, upper_bound, color=colors["firebrick_red"], alpha=0.1, zorder=3)
+        ax.plot(y_band, upper_bound, "--", color=colors["firebrick_red"], linewidth=2, alpha=0.7, label=f"±{args.percent}% band", zorder=4)
+        ax.plot(y_band, lower_bound, "--", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=4)
+        ax.fill_between(y_band, lower_bound, upper_bound, color=colors["firebrick_red"], alpha=0.1, zorder=3)
+        
+        # Highlight worst and/or best points if requested
+        errors = np.abs(y_pred - y_true)
+        
+        if highlight_worst:
+            # Calculate error for all points (use unsubsampled data)
+            worst_idx = np.argmax(errors)
+            worst_true = y_true[worst_idx]
+            worst_pred = y_pred[worst_idx]
+            
+            # Draw circle around worst point
+            circle = plt.Circle((worst_true, worst_pred), radius=0.03, fill=False, edgecolor=colors["firebrick_red"], linewidth=2.5, zorder=5)
+            ax.add_patch(circle)
+        
+        if highlight_best:
+            # Find best point (minimum error)
+            best_idx = np.argmin(errors)
+            best_true = y_true[best_idx]
+            best_pred = y_pred[best_idx]
+            
+            # Draw circle around best point in green
+            circle = plt.Circle((best_true, best_pred), radius=0.03, fill=False, edgecolor=colors["forest_green"], linewidth=2.5, zorder=5)
+            ax.add_patch(circle)
         
         ax.set_xlabel("Target Committor")
         ax.set_ylabel(f"Predicted Committor")
         ax.set_title(f"β={beta:.3f}, h={h:.3f}\n(Fraction outside band: {fraction_outside:.4f})")
-        ax.grid(True, alpha=0.2)
+        ax.grid(True, alpha=0.2, zorder=0)
         ax.legend()
         ax.set_aspect("equal")
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
         
         return plt.gcf()
     
     # Create scatter plot for worst CNN
     if worst_cnn_beta is not None and worst_cnn_h is not None:
         y_true_worst_cnn, y_pred_cnn_worst, _ = all_predictions[(worst_cnn_beta, worst_cnn_h)]
+
         create_scatter_plot(y_true_worst_cnn, y_pred_cnn_worst, "q-NN", worst_cnn_beta, worst_cnn_h, worst_cnn_fraction, args, out_dir, config)
-        worst_cnn_path = out_dir / f"committor_scatter_cnn_{worst_cnn_beta:.3f}_{worst_cnn_h:.3f}.pdf"
+        worst_cnn_path = out_dir / f"committor_scatter_cnn_{worst_cnn_beta:.3f}_{worst_cnn_h:.3f}.svg"
         plt.savefig(worst_cnn_path, bbox_inches='tight')
         plt.close()
         print(f"Saved worst CNN scatter plot to {worst_cnn_path}")
@@ -520,8 +731,9 @@ def main() -> None:
     # Create scatter plot for worst cluster
     if worst_cluster_beta is not None and worst_cluster_h is not None:
         y_true_worst_cluster, _, y_pred_cluster_worst = all_predictions[(worst_cluster_beta, worst_cluster_h)]
-        create_scatter_plot(y_true_worst_cluster, y_pred_cluster_worst, "Cluster Size", worst_cluster_beta, worst_cluster_h, worst_cluster_fraction, args, out_dir, config)
-        worst_cluster_path = out_dir / f"committor_scatter_cluster_{worst_cluster_beta:.3f}_{worst_cluster_h:.3f}.pdf"
+
+        create_scatter_plot(y_true_worst_cluster, y_pred_cluster_worst, "Cluster Size", worst_cluster_beta, worst_cluster_h, worst_cluster_fraction, args, out_dir, config, highlight_worst=True, highlight_best=False)
+        worst_cluster_path = out_dir / f"committor_scatter_cluster_{worst_cluster_beta:.3f}_{worst_cluster_h:.3f}.svg"
         plt.savefig(worst_cluster_path, bbox_inches='tight')
         plt.close()
         print(f"Saved worst cluster scatter plot to {worst_cluster_path}")
