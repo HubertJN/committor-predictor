@@ -5,9 +5,9 @@ import time
 import torch
 import numpy as np
 
-from modules.architecture import CNN, fit, physics_func
-from modules.dataset import prepare_subset, prepare_datasets
-from modules.config import load_config
+from utils.architecture import CNN, fit, physics_func
+from utils.dataset import prepare_subset, prepare_datasets
+from utils.config import load_config
 
 config = load_config("config.yaml")
 device = "cuda" if torch.cuda.is_available() else "cpu"
