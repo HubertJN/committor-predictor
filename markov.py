@@ -332,6 +332,8 @@ def run_one(
     m_list = [16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
     n_repeats = 1 
     C_dict = {}
+    previous_m = None
+    previous_trajs = None
 
     for m in m_list:
         print(f"\n=== Processing lag m={m} ===")
@@ -346,14 +348,23 @@ def run_one(
             traj_list = []
             for r in range(n_repeats):
                 print(f"  Bin {b}: repeat {r+1}/{n_repeats}")
-                if len(frames_in_bin) >= gpu_nsms:
-                    chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=False)
+                
+                # Determine starting grids and number of sweeps
+                if previous_m is None:
+                    # First iteration: start from initial conditions
+                    if len(frames_in_bin) >= gpu_nsms:
+                        chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=False)
+                    else:
+                        chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
+                    gridlist = [grids_main[i].copy() for i in chosen]
+                    sweeps_to_run = m + 1
                 else:
-                    chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
-
-                gridlist = [grids_main[i].copy() for i in chosen]
+                    # Reuse trajectories from previous m: use their final states as starting points
+                    gridlist = [previous_trajs[b][i % len(previous_trajs[b])].copy() for i in range(gpu_nsms)]
+                    sweeps_to_run = m - previous_m
+                
                 gasp.run_committor_calc(
-                    L, ngrids, m + 1, beta, h,
+                    L, ngrids, sweeps_to_run, beta, h,
                     grid_output_int=m, mag_output_int=m,
                     grid_input="NumPy", grid_array=gridlist,
                     keep_grids=True, up_threshold=1.01, dn_threshold=-1.01,
@@ -373,6 +384,10 @@ def run_one(
 
         C_m = build_C_matrix_for_lag(m, generated_trajs)
         C_dict[m] = C_m
+        
+        # Save trajectories for next iteration
+        previous_m = m
+        previous_trajs = generated_trajs
 
     if c_matrix_out is not None:
         out_path = Path(c_matrix_out)
