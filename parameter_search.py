@@ -5,20 +5,20 @@ import time
 import torch
 import numpy as np
 
-from utils.architecture import CNN, fit, physics_func
+from utils.architecture import CNN, fit
 from utils.dataset import prepare_subset, prepare_datasets
 from utils.config import load_config
 
 config = load_config("config.yaml")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-grids, attrs, train_idx, valid_idx = prepare_subset(
+grids, attrs, train_idx, valid_idx, test_idx = prepare_subset(
     config.paths.data,
     test_size=config.dataset.test_size
 )
-train_dl, valid_dl, train_ds, valid_ds = prepare_datasets(
-    grids, attrs, train_idx, valid_idx,
-    config.model.type, device,
+train_dl, valid_dl, test_dl, train_ds, valid_ds, test_ds = prepare_datasets(
+    grids, attrs, train_idx, valid_idx, test_idx,
+    device,
     config.dataset.batch_size,
     augment=config.dataset.augment
 )
@@ -58,11 +58,9 @@ else:
 
 # instantiate model for this combo
 model = CNN(
-    input_size=config.model.input_size,
     channels=channels,
     num_cnn_layers=num_cnn_layers,
-    num_fc_layers=num_fc_layers,
-    dropout=config.model.dropout
+    num_fc_layers=num_fc_layers
 ).to(device)
 
 # optimizer param groups
@@ -81,7 +79,7 @@ optimizer = torch.optim.AdamW([
 # --- Training ---
 print(f"Starting training for CNN (ch={channels}, nc={num_cnn_layers}, nf={num_fc_layers})...")
 start_time = time.time()  # start timer
-fit(config.training.epochs, model, loss_func, physics_func, optimizer,
+fit(config.training.epochs, model, loss_func, optimizer,
     train_dl, valid_dl, device)
 elapsed_time = time.time() - start_time  # elapsed seconds
 print(f"Training complete in {elapsed_time:.2f} seconds.")
