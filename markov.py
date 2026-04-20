@@ -357,15 +357,15 @@ def run_one(
                     else:
                         chosen = np.random.choice(frames_in_bin, size=gpu_nsms, replace=True)
                     gridlist = [grids_main[i].copy() for i in chosen]
-                    sweeps_to_run = m + 1
+                    sweeps_to_run = m
                 else:
                     # Reuse trajectories from previous m: use their final states as starting points
                     gridlist = [previous_trajs[b][i % len(previous_trajs[b])].copy() for i in range(gpu_nsms)]
                     sweeps_to_run = m - previous_m
                 
                 gasp.run_committor_calc(
-                    L, ngrids, sweeps_to_run, beta, h,
-                    grid_output_int=m, mag_output_int=m,
+                    L, ngrids, sweeps_to_run+1, beta, h,
+                    grid_output_int=sweeps_to_run, mag_output_int=sweeps_to_run,
                     grid_input="NumPy", grid_array=gridlist,
                     keep_grids=True, up_threshold=1.01, dn_threshold=-1.01,
                     nsms=gpu_nsms, gpu_method=2, outname="None",
