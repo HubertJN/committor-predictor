@@ -165,6 +165,13 @@ def build_C_matrix_for_lag(m, traj_dict):
     return C_matrix
 
 
+def update_C_matrix_row_from_frames(C_matrix: np.ndarray, s_i: int, frames: np.ndarray) -> None:
+    q_dest = compute_q_for_frames(frames)
+    for q_j in q_dest:
+        s_j = bin_state(q_j)
+        C_matrix[s_i, s_j] += 1
+
+
 def run_one(
     beta: float,
     h: float,
@@ -271,6 +278,9 @@ def run_one(
 
         plt.savefig("fig.pdf")
         plt.close()
+        del test_gridlist, test_traj, q_test
+        if device == "cuda":
+            torch.cuda.empty_cache()
         
         q_main = compute_committors_for_trajectory(grids_main, model, device)
     else:
@@ -309,6 +319,9 @@ def run_one(
 
         plt.savefig("fig.pdf")
         plt.close()
+        del test_gridlist, test_traj, lcs_test
+        if device == "cuda":
+            torch.cuda.empty_cache()
 
         q_main = np.asarray(attrs_all[subset_indices, 1], dtype=float)
     
@@ -341,7 +354,7 @@ def run_one(
 
     for m in m_list:
         print(f"\n=== Processing lag m={m} ===")
-        generated_trajs = {}
+        C_m = np.zeros((S, S), dtype=np.float64)
 
         for b in range(S):
             frames_in_bin = np.where(bin_ids == b)[0]
@@ -349,7 +362,7 @@ def run_one(
                 print(f"Bin {b}: no frames available, skipping.")
                 continue
 
-            traj_list = []
+            total_len = 0
             for r in range(n_repeats):
                 print(f"  Bin {b}: repeat {r+1}/{n_repeats}")
                 if len(frames_in_bin) >= gpu_nsms:
@@ -371,13 +384,15 @@ def run_one(
                 for i in range(ngrids):
                     traj[i] = gasp.grids[-1][i].grid
                 print("isweep of saved trajectory", gasp.grids[-1][0].isweep)
-                traj_list.append(traj)
+                update_C_matrix_row_from_frames(C_m, b, traj)
+                total_len += traj.shape[0]
+                del traj, gridlist, chosen
+                if device == "cuda":
+                    torch.cuda.empty_cache()
 
-            generated_trajs[b] = np.concatenate(traj_list, axis=0)
-            total_len = generated_trajs[b].shape[0]
             print(f"  Bin {b}: total trajectories = {total_len}")
 
-        C_m = build_C_matrix_for_lag(m, generated_trajs)
+        print(C_m)
         C_dict[m] = C_m
 
     if c_matrix_out is not None:
