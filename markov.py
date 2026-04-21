@@ -154,7 +154,7 @@ def bin_state(q):
 
 
 def build_C_matrix_for_lag(m, traj_dict):
-    C_matrix = np.zeros((S, S), dtype=np.float64)
+    C_matrix = np.zeros((S, S), dtype=np.uint32)
     for b, frames in traj_dict.items():
         s_i = b
         q_dest = compute_q_for_frames(frames)
@@ -349,12 +349,13 @@ def run_one(
         print(f"Bin {b}: sampled frame index {sampled}")
 
     m_list = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]
+    m_list = [64]
     n_repeats = 1 
     C_dict = {}
 
     for m in m_list:
         print(f"\n=== Processing lag m={m} ===")
-        C_m = np.zeros((S, S), dtype=np.float64)
+        C_m = np.zeros((S, S), dtype=np.uint32)
 
         for b in range(S):
             frames_in_bin = np.where(bin_ids == b)[0]
