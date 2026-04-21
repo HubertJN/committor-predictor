@@ -1,7 +1,7 @@
 """Plot nucleation rates vs beta (log y-axis).
 
-Reads per-run MSM outputs (msm_analysis_*.npz) and overlays brute-force
-nucleation rates (nucleation_*.npz).
+Reads compact deeptime MSM outputs (msm_analysis_*.npz) and overlays
+brute-force nucleation rates (nucleation_*.npz).
 
 You always get the brute-force curve(s). The only option is which MSM reaction
 coordinate(s) to show: cnn, lcs, or both.
@@ -12,12 +12,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-import matplotlib.colors as mcolors
 import colorsys
+import matplotlib as mpl
+import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.lines import Line2D
 
 from utils.config import load_config
 
@@ -39,11 +39,13 @@ plt.rcParams.update(
 
 mpl.rcParams["svg.fonttype"] = "none"
 
+
 def adjust_lightness(color, factor):
     r, g, b = mcolors.to_rgb(color)
     h, l, s = colorsys.rgb_to_hls(r, g, b)
     l = max(0, min(1, l * factor))
     return colorsys.hls_to_rgb(h, l, s)
+
 
 def _unique_sorted(values: np.ndarray) -> np.ndarray:
     return np.unique(np.asarray(values))
@@ -108,13 +110,12 @@ def _pair_mask(beta: np.ndarray, h: np.ndarray, allowed_pairs: set[tuple[float, 
     return mask
 
 
-def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
-    """Load brute-force nucleation rate files from a directory.
+def _as_scalar(value, dtype=float):
+    return np.asarray(value, dtype=dtype).ravel()[0]
 
-    Expected per-run file format:
-      data/nucleation_{beta:.3f}_{h:.3f}.npz
-    containing at least: beta, h, rate_per_site.
-    """
+
+def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
+    """Load brute-force nucleation rate files from a directory."""
 
     if not brute_dir.exists():
         raise FileNotFoundError(f"Brute-force directory not found: {brute_dir}")
@@ -134,16 +135,12 @@ def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
         d = np.load(str(fp))
         if "beta" not in d or "h" not in d or "rate_per_site" not in d:
             continue
-        b = float(np.asarray(d["beta"]).ravel()[0])
-        hh = float(np.asarray(d["h"]).ravel()[0])
-        r = float(np.asarray(d["rate_per_site"]).ravel()[0])
-        se = float(np.asarray(d["rate_per_site_se"]).ravel()[0]) if "rate_per_site_se" in d else np.nan
-        cil = (
-            float(np.asarray(d["rate_per_site_ci_low"]).ravel()[0]) if "rate_per_site_ci_low" in d else np.nan
-        )
-        cih = (
-            float(np.asarray(d["rate_per_site_ci_high"]).ravel()[0]) if "rate_per_site_ci_high" in d else np.nan
-        )
+        b = float(_as_scalar(d["beta"]))
+        hh = float(_as_scalar(d["h"]))
+        r = float(_as_scalar(d["rate_per_site"]))
+        se = float(_as_scalar(d["rate_per_site_se"])) if "rate_per_site_se" in d else np.nan
+        cil = float(_as_scalar(d["rate_per_site_ci_low"])) if "rate_per_site_ci_low" in d else np.nan
+        cih = float(_as_scalar(d["rate_per_site_ci_high"])) if "rate_per_site_ci_high" in d else np.nan
         if np.isfinite(b) and np.isfinite(hh) and np.isfinite(r):
             betas.append(b)
             hs.append(hh)
@@ -153,9 +150,7 @@ def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
             rate_ci_high.append(cih)
 
     if not betas:
-        raise ValueError(
-            f"Found {len(files)} files in {brute_dir}, but none contained beta/h/rate_per_site."
-        )
+        raise ValueError(f"Found {len(files)} files in {brute_dir}, but none contained beta/h/rate_per_site.")
 
     return {
         "beta": np.asarray(betas, dtype=float),
@@ -167,47 +162,8 @@ def _load_brute_force_rates(brute_dir: Path) -> dict[str, np.ndarray]:
     }
 
 
-def _load_subsampling_analysis(msm_dir: Path, beta: float, h: float, rc: str) -> dict | None:
-    """Load subsampling analysis file for a specific (beta, h, rc).
-    
-    Returns dict with sample_counts, rates, rate_errors, rate_ci_low, rate_ci_high, etc.
-    Note: brute_force_rate is NOT loaded from file; it comes from main plot.
-    Returns None if file not found.
-    """
-    fp = Path(msm_dir) / f"subsampling_analysis_{beta:.3f}_{h:.3f}_{rc}.npz"
-    
-    if not fp.exists():
-        return None
-    
-    try:
-        d = np.load(str(fp))
-        return {
-            "beta": float(d["beta"]),
-            "h": float(d["h"]),
-            "rc": str(d["rc"]),
-            "best_m": int(d["best_m"]),
-            "sample_counts": np.asarray(d["sample_counts"], dtype=int),
-            "rates": np.asarray(d["rates"], dtype=float),
-            "rate_errors": np.asarray(d["rate_errors"], dtype=float),
-            "rate_ci_low": np.asarray(d["rate_ci_low"], dtype=float),
-            "rate_ci_high": np.asarray(d["rate_ci_high"], dtype=float),
-            "total_samples": int(d["total_samples"]),
-            "n_states": int(d["n_states"]),
-        }
-    except Exception as e:
-        print(f"Failed to load {fp}: {e}")
-        return None
-
-
 def _load_msm_per_run_files(msm_dir: Path) -> dict[str, np.ndarray]:
-    """Load per-run MSM analysis outputs from a directory.
-
-    Expected files:
-      msm_analysis_{beta:.3f}_{h:.3f}_{rc}.npz
-        where rc in {cnn, cluster, lcs}.
-    
-    Filters to only include records with lag_is_selected=True if available.
-    """
+    """Load compact deeptime MSM analysis outputs from a directory."""
 
     if not msm_dir.exists():
         raise FileNotFoundError(f"MSM directory not found: {msm_dir}")
@@ -228,46 +184,25 @@ def _load_msm_per_run_files(msm_dir: Path) -> dict[str, np.ndarray]:
 
     for fp in files:
         d = np.load(str(fp))
-        # Each file may contain multiple m values (records per lag)
-        beta_arr = np.asarray(d["beta"], dtype=float)
-        h_arr = np.asarray(d["h"], dtype=float)
-        rc_arr = np.asarray(d["rc"], dtype=str) if "rc" in d else np.full(beta_arr.shape, "cnn", dtype=str)
-        m_arr = np.asarray(d["m"], dtype=int)
-
-        Jc = np.asarray(d["J_central"], dtype=float) if "J_central" in d else None
-        Jm = np.asarray(d["J_mean"], dtype=float) if "J_mean" in d else None
-        Js = np.asarray(d["J_std"], dtype=float) if "J_std" in d else None
-        Jl = np.asarray(d["J_ci_low"], dtype=float) if "J_ci_low" in d else None
-        Jh = np.asarray(d["J_ci_high"], dtype=float) if "J_ci_high" in d else None
-        
-        # Load lag_is_selected if available, otherwise include all
-        lag_selected = np.asarray(d["lag_is_selected"], dtype=bool) if "lag_is_selected" in d else np.ones(beta_arr.shape, dtype=bool)
-
-        nrec = beta_arr.size
-        if Jc is None or Jm is None:
+        if "nucleation_rate" not in d:
             continue
 
-        for i in range(nrec):
-            # Skip records that weren't selected by automatic lag selection
-            if not lag_selected[i]:
-                continue
-            
-            beta.append(float(beta_arr[i]))
-            h.append(float(h_arr[i]))
-            # Map cluster_raw to lcs for backward compatibility
-            rc_val = str(rc_arr[i])
-            if rc_val == "cluster_raw":
-                rc_val = "lcs"
-            rc.append(rc_val)
-            m.append(int(m_arr[i]))
-            J_central.append(float(Jc[i]))
-            J_mean.append(float(Jm[i]))
-            J_std.append(float(Js[i]) if Js is not None else np.nan)
-            J_ci_low.append(float(Jl[i]) if Jl is not None else np.nan)
-            J_ci_high.append(float(Jh[i]) if Jh is not None else np.nan)
+        rc_val = str(_as_scalar(d["rc"], dtype=str)) if "rc" in d else "cnn"
+        if rc_val == "cluster_raw":
+            rc_val = "lcs"
+
+        beta.append(float(_as_scalar(d["beta"])))
+        h.append(float(_as_scalar(d["h"])))
+        rc.append(rc_val)
+        m.append(int(_as_scalar(d["selected_m"] if "selected_m" in d else d["m"], dtype=int)))
+        J_central.append(float(_as_scalar(d["nucleation_rate"])))
+        J_mean.append(float(_as_scalar(d["nucleation_rate"])))
+        J_std.append(np.nan)
+        J_ci_low.append(float(_as_scalar(d["nucleation_rate_ci_low"])) if "nucleation_rate_ci_low" in d else np.nan)
+        J_ci_high.append(float(_as_scalar(d["nucleation_rate_ci_high"])) if "nucleation_rate_ci_high" in d else np.nan)
 
     if not beta:
-        raise ValueError(f"Found MSM files in {msm_dir}, but none contained expected arrays.")
+        raise ValueError(f"Found MSM files in {msm_dir}, but none contained compact deeptime nucleation_rate data.")
 
     return {
         "beta": np.asarray(beta, dtype=float),
@@ -282,465 +217,13 @@ def _load_msm_per_run_files(msm_dir: Path) -> dict[str, np.ndarray]:
     }
 
 
-def plot_rate_vs_samples(msm_dir: Path, 
-                        beta: float, 
-                        h: float,
-                        out_dir: Path,
-                        config,
-                        brute: dict | None = None) -> None:
-    """Plot nucleation rate vs sample count for hardcoded (beta, h).
-    
-    Creates side-by-side plots for cnn (q-NN) and lcs reaction coordinates.
-    Both plots share the same y-axis limits.
-    If brute dict is provided, uses brute force rate for that (beta, h) pair.
-    """
-    rc_names = {"cnn": "q-NN", "lcs": "LCS"}
-    rc_markers = {"cnn": "o", "lcs": "s"}
-    rc_colors_base = {"cnn": "#1F77B4", "lcs": "#2CA02C"}
-    
-    # First pass: collect data and get natural limits accounting for error bars
-    data_dict = {}
-    limits_dict = {}
-    
-    for rc in ["cnn", "lcs"]:
-        data = _load_subsampling_analysis(msm_dir, beta, h, rc)
-        if data is not None:
-            data_dict[rc] = data
-            
-            # Calculate limits including error bars
-            sample_counts = np.asarray(data["sample_counts"], dtype=float)
-            rates = np.asarray(data["rates"], dtype=float)
-            rate_ci_low = np.asarray(data["rate_ci_low"], dtype=float)
-            rate_ci_high = np.asarray(data["rate_ci_high"], dtype=float)
-            
-            # Create temporary figure to get default limits for x-axis
-            fig_temp, ax_temp = plt.subplots(figsize=(7, 5))
-            ax_temp.scatter(sample_counts, rates, alpha=0.0)  # Invisible plot to get limits
-            ax_temp.set_xscale("log")
-            ax_temp.set_yscale("log")
-            
-            x_lim = ax_temp.get_xlim()
-            plt.close(fig_temp)
-            
-            # For y-axis, include error bar bounds
-            y_min_data = np.min(rate_ci_low[np.isfinite(rate_ci_low)])
-            y_max_data = np.max(rate_ci_high[np.isfinite(rate_ci_high)])
-            
-            # Add 15% padding in log space for breathing room
-            log_y_min = np.log10(y_min_data)
-            log_y_max = np.log10(y_max_data)
-            log_span = log_y_max - log_y_min
-            log_y_min_padded = log_y_min - 0.15 * log_span
-            log_y_max_padded = log_y_max + 0.15 * log_span
-            
-            y_lim = (10**log_y_min_padded, 10**log_y_max_padded)
-            
-            limits_dict[rc] = {"x_lim": x_lim, "y_lim": y_lim}
-    
-    if not data_dict:
-        print(f"Warning: No subsampling analysis files found for beta={beta:.3f}, h={h:.3f}")
-        return
-    
-    # Look up brute force rate from provided brute dict if available
-    brute_rate_from_main = None
-    if brute is not None:
-        mask_match = np.isclose(brute["beta"], beta, atol=5e-4) & np.isclose(brute["h"], h, atol=5e-4)
-        if np.any(mask_match):
-            idx = np.where(mask_match)[0][0]
-            brute_rate_from_main = float(brute["rate_per_site"][idx])
-    
-    # Calculate shared y-limits by taking the greater range
-    if "cnn" in limits_dict and "lcs" in limits_dict:
-        # For y-axis: take min of minimums, max of maximums (already includes error bar padding)
-        y_min = min(limits_dict["cnn"]["y_lim"][0], limits_dict["lcs"]["y_lim"][0])
-        y_max = max(limits_dict["cnn"]["y_lim"][1], limits_dict["lcs"]["y_lim"][1])
-    elif "cnn" in limits_dict:
-        y_min, y_max = limits_dict["cnn"]["y_lim"]
-    else:
-        y_min, y_max = limits_dict["lcs"]["y_lim"]
-    
-    # Find common valid sample counts (where both cnn and lcs have finite rates)
-    valid_mask_cnn = np.isfinite(np.asarray(data_dict["cnn"]["rates"], dtype=float)) if "cnn" in data_dict else None
-    valid_mask_lcs = np.isfinite(np.asarray(data_dict["lcs"]["rates"], dtype=float)) if "lcs" in data_dict else None
-    
-    if valid_mask_cnn is not None and valid_mask_lcs is not None:
-        # Both available: find intersection
-        common_valid = valid_mask_cnn & valid_mask_lcs
-        if not np.any(common_valid):
-            print(f"Warning: No common valid sample counts for beta={beta:.3f}, h={h:.3f}")
-            return
-        # Find first valid index
-        first_valid_idx = np.argmax(common_valid)
-    elif valid_mask_cnn is not None:
-        # Only cnn available
-        if not np.any(valid_mask_cnn):
-            print(f"Warning: No valid rates for cnn at beta={beta:.3f}, h={h:.3f}")
-            return
-        first_valid_idx = np.argmax(valid_mask_cnn)
-    else:
-        # Only lcs available
-        if not np.any(valid_mask_lcs):
-            print(f"Warning: No valid rates for lcs at beta={beta:.3f}, h={h:.3f}")
-            return
-        first_valid_idx = np.argmax(valid_mask_lcs)
-    
-    # Recalculate y limits based on filtered data only
-    # Create combined valid mask where BOTH cnn and lcs have complete data
-    valid_mask_cnn_data = np.ones(len(np.asarray(data_dict["cnn"]["rates"][first_valid_idx:], dtype=float)), dtype=bool) if "cnn" in data_dict else np.array([], dtype=bool)
-    valid_mask_lcs_data = np.ones(len(np.asarray(data_dict["lcs"]["rates"][first_valid_idx:], dtype=float)), dtype=bool) if "lcs" in data_dict else np.array([], dtype=bool)
-    
-    if "cnn" in data_dict:
-        rates_cnn = np.asarray(data_dict["cnn"]["rates"][first_valid_idx:], dtype=float)
-        ci_low_cnn = np.asarray(data_dict["cnn"]["rate_ci_low"][first_valid_idx:], dtype=float)
-        ci_high_cnn = np.asarray(data_dict["cnn"]["rate_ci_high"][first_valid_idx:], dtype=float)
-        valid_mask_cnn_data = np.isfinite(rates_cnn) & np.isfinite(ci_low_cnn) & np.isfinite(ci_high_cnn)
-    
-    if "lcs" in data_dict:
-        rates_lcs = np.asarray(data_dict["lcs"]["rates"][first_valid_idx:], dtype=float)
-        ci_low_lcs = np.asarray(data_dict["lcs"]["rate_ci_low"][first_valid_idx:], dtype=float)
-        ci_high_lcs = np.asarray(data_dict["lcs"]["rate_ci_high"][first_valid_idx:], dtype=float)
-        valid_mask_lcs_data = np.isfinite(rates_lcs) & np.isfinite(ci_low_lcs) & np.isfinite(ci_high_lcs)
-    
-    # Combine: only keep indices where BOTH have valid data
-    combined_valid_mask = valid_mask_cnn_data & valid_mask_lcs_data
-    if not np.any(combined_valid_mask):
-        print(f"Warning: No common points with complete data for beta={beta:.3f}, h={h:.3f}")
-        return
-    
-    # Collect valid rates and bounds for limit calculation
-    valid_rates = []
-    valid_ci_low = []
-    valid_ci_high = []
-    for rc in ["cnn", "lcs"]:
-        if rc in data_dict:
-            rates_rc = np.asarray(data_dict[rc]["rates"][first_valid_idx:], dtype=float)
-            ci_low_rc = np.asarray(data_dict[rc]["rate_ci_low"][first_valid_idx:], dtype=float)
-            ci_high_rc = np.asarray(data_dict[rc]["rate_ci_high"][first_valid_idx:], dtype=float)
-            
-            # Apply combined mask to get matching points
-            valid_rates.extend(rates_rc[combined_valid_mask].tolist())
-            valid_ci_low.extend(ci_low_rc[combined_valid_mask].tolist())
-            valid_ci_high.extend(ci_high_rc[combined_valid_mask].tolist())
-    
-    valid_rates = np.asarray(valid_rates, dtype=float)
-    valid_ci_low = np.asarray(valid_ci_low, dtype=float)
-    valid_ci_high = np.asarray(valid_ci_high, dtype=float)
-    
-    # Get finite values for limit calculation (only rates need to be finite)
-    finite_mask = np.isfinite(valid_rates)
-    if np.any(finite_mask):
-        # For limits, use finite CI bounds where available, otherwise use rates
-        ci_low_for_limits = valid_ci_low.copy()
-        ci_high_for_limits = valid_ci_high.copy()
-        
-        # Replace NaN bounds with the rate value itself
-        ci_low_for_limits = np.where(np.isfinite(ci_low_for_limits), ci_low_for_limits, valid_rates)
-        ci_high_for_limits = np.where(np.isfinite(ci_high_for_limits), ci_high_for_limits, valid_rates)
-        
-        y_min_data = np.min(ci_low_for_limits[finite_mask])
-        y_max_data = np.max(ci_high_for_limits[finite_mask])
-        
-        # Add 15% padding in log space
-        log_y_min = np.log10(y_min_data)
-        log_y_max = np.log10(y_max_data)
-        log_span = log_y_max - log_y_min
-        log_y_min_padded = log_y_min - 0.15 * log_span
-        log_y_max_padded = log_y_max + 0.15 * log_span
-        
-        y_min = 10**log_y_min_padded
-        y_max = 10**log_y_max_padded
-    
-    # Create single figure with both reaction coordinates overlaid
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Plot for each reaction coordinate
-    for rc in ["cnn", "lcs"]:
-        if rc not in data_dict:
-            continue
-        
-        data = data_dict[rc]
-        
-        # Plot rate vs samples (starting from first_valid_idx)
-        sample_counts = data["sample_counts"][first_valid_idx:]
-        rates = data["rates"][first_valid_idx:]
-        rate_ci_low = data["rate_ci_low"][first_valid_idx:]
-        rate_ci_high = data["rate_ci_high"][first_valid_idx:]
-        
-        # Apply combined mask where both cnn and lcs have complete data
-        sample_counts = sample_counts[combined_valid_mask]
-        rates = rates[combined_valid_mask]
-        rate_ci_low = rate_ci_low[combined_valid_mask]
-        rate_ci_high = rate_ci_high[combined_valid_mask]
-        
-        if len(rates) == 0:
-            print(f"Warning: No valid points for {rc} after filtering NaNs")
-            continue
-        
-        # Use brute force rate from main plot
-        if brute_rate_from_main is None:
-            print(f"Warning: No brute force rate found for beta={beta:.3f}, h={h:.3f} in main data")
-            continue
-        brute_rate = brute_rate_from_main
-        
-        # Error bars (asymmetric using CI)
-        yerr_low = rates - rate_ci_low
-        yerr_high = rate_ci_high - rates
-        yerr = np.vstack([yerr_low, yerr_high])
-        
-        color = rc_colors_base[rc]
-        marker = rc_markers[rc]
-        
-        # Plot data points with error bars
-        ax.errorbar(
-            sample_counts,
-            rates,
-            yerr=yerr,
-            fmt=marker,
-            markersize=10,
-            color=color,
-            ecolor=color,
-            elinewidth=1.5,
-            capsize=4,
-            capthick=1.2,
-            alpha=0.8,
-            label=rc_names[rc],
-            zorder=3,
-        )
-        
-        # Plot brute force rate as horizontal dotted line
-        ax.axhline(
-            brute_rate,
-            linestyle=":",
-            linewidth=2.5,
-            color=color,
-            alpha=0.7,
-            label=f"{rc_names[rc]} brute force",
-            zorder=2,
-        )
-        
-    # Set axis labels and properties
-    ax.set_xlabel("Sample Count per Row")
-    ax.set_ylabel(r"$I$ (MCSS$^{-1}$)")
-    ax.set_title(f"Nucleation Rate vs Sample Count (β={beta:.3f}, h={h:.3f})")
-    ax.set_xscale("log")
-    ax.set_yscale("log")
-    ax.set_ylim(y_min, y_max)
-    ax.grid(True, which="both", alpha=0.2)
-    ax.legend(loc="best", fontsize=FONT_SIZE * 0.9)
-    
-    plt.tight_layout()
-    
-    out_path = out_dir / f"rate_vs_samples_{beta:.3f}_{h:.3f}.svg"
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close()
-    
-    print(f"Saved rate vs samples plot to {out_path}")
-
-
-def plot_convergence_rate(msm_dir: Path, 
-                         beta: float, 
-                         h: float,
-                         out_dir: Path,
-                         config) -> None:
-    """Plot percentage difference between subsampling rate estimates and MSM rate.
-    
-    For each sample count, calculates the percentage difference from the reference MSM rate.
-    """
-    rc_names = {"cnn": "q-NN", "lcs": "LCS"}
-    rc_markers = {"cnn": "o", "lcs": "s"}
-    rc_colors_base = {"cnn": "#1F77B4", "lcs": "#2CA02C"}
-    
-    # Load MSM data to get reference rates
-    msm_data = _load_msm_per_run_files(msm_dir)
-    
-    # Load subsampling data for both reaction coordinates
-    data_dict = {}
-    
-    for rc in ["cnn", "lcs"]:
-        data = _load_subsampling_analysis(msm_dir, beta, h, rc)
-        if data is not None:
-            data_dict[rc] = data
-    
-    if not data_dict:
-        print(f"Warning: No subsampling analysis files found for beta={beta:.3f}, h={h:.3f}")
-        return
-    
-    # Find common valid sample counts (where both cnn and lcs have finite rates)
-    valid_mask_cnn = np.isfinite(np.asarray(data_dict["cnn"]["rates"], dtype=float)) if "cnn" in data_dict else None
-    valid_mask_lcs = np.isfinite(np.asarray(data_dict["lcs"]["rates"], dtype=float)) if "lcs" in data_dict else None
-    
-    if valid_mask_cnn is not None and valid_mask_lcs is not None:
-        # Both available: find intersection
-        common_valid = valid_mask_cnn & valid_mask_lcs
-        if not np.any(common_valid):
-            print(f"Warning: No common valid sample counts for beta={beta:.3f}, h={h:.3f}")
-            return
-        # Find first valid index
-        first_valid_idx = np.argmax(common_valid)
-    elif valid_mask_cnn is not None:
-        if not np.any(valid_mask_cnn):
-            print(f"Warning: No valid rates for cnn at beta={beta:.3f}, h={h:.3f}")
-            return
-        first_valid_idx = np.argmax(valid_mask_cnn)
-    else:
-        if not np.any(valid_mask_lcs):
-            print(f"Warning: No valid rates for lcs at beta={beta:.3f}, h={h:.3f}")
-            return
-        first_valid_idx = np.argmax(valid_mask_lcs)
-    
-    # Create combined valid mask where BOTH cnn and lcs have complete data
-    # (for each sample count, both rc must have finite rates and error bounds)
-    valid_mask_cnn_data = np.ones(len(np.asarray(data_dict["cnn"]["rates"], dtype=float)[first_valid_idx:]), dtype=bool) if "cnn" in data_dict else np.array([], dtype=bool)
-    valid_mask_lcs_data = np.ones(len(np.asarray(data_dict["lcs"]["rates"], dtype=float)[first_valid_idx:]), dtype=bool) if "lcs" in data_dict else np.array([], dtype=bool)
-    
-    if "cnn" in data_dict:
-        rates_cnn = np.asarray(data_dict["cnn"]["rates"], dtype=float)[first_valid_idx:]
-        ci_low_cnn = np.asarray(data_dict["cnn"]["rate_ci_low"], dtype=float)[first_valid_idx:]
-        ci_high_cnn = np.asarray(data_dict["cnn"]["rate_ci_high"], dtype=float)[first_valid_idx:]
-        valid_mask_cnn_data = np.isfinite(rates_cnn) & np.isfinite(ci_low_cnn) & np.isfinite(ci_high_cnn)
-    
-    if "lcs" in data_dict:
-        rates_lcs = np.asarray(data_dict["lcs"]["rates"], dtype=float)[first_valid_idx:]
-        ci_low_lcs = np.asarray(data_dict["lcs"]["rate_ci_low"], dtype=float)[first_valid_idx:]
-        ci_high_lcs = np.asarray(data_dict["lcs"]["rate_ci_high"], dtype=float)[first_valid_idx:]
-        valid_mask_lcs_data = np.isfinite(rates_lcs) & np.isfinite(ci_low_lcs) & np.isfinite(ci_high_lcs)
-    
-    # Combine: only keep indices where BOTH have valid data
-    combined_valid_mask = valid_mask_cnn_data & valid_mask_lcs_data
-    if not np.any(combined_valid_mask):
-        print(f"Warning: No common points with complete data for beta={beta:.3f}, h={h:.3f}")
-        return
-    
-    # Calculate shared y-limits from all data
-    diff_to_msm_all = []
-    
-    for rc in ["cnn", "lcs"]:
-        if rc not in data_dict:
-            continue
-        
-        # Find MSM rate for this (beta, h, rc)
-        mask_msm = (np.isclose(msm_data["beta"], beta, atol=5e-4) & 
-                    np.isclose(msm_data["h"], h, atol=5e-4) & 
-                    (msm_data["rc"] == rc))
-        
-        if not np.any(mask_msm):
-            print(f"Warning: No MSM data found for beta={beta:.3f}, h={h:.3f}, rc={rc}")
-            continue
-        
-        msm_rate = float(msm_data["J_central"][mask_msm][0])
-        
-        if not np.isfinite(msm_rate) or msm_rate <= 0:
-            print(f"Warning: Invalid MSM rate for beta={beta:.3f}, h={h:.3f}, rc={rc}")
-            continue
-        
-        rates = np.asarray(data_dict[rc]["rates"], dtype=float)[first_valid_idx:]
-        rates = rates[combined_valid_mask]
-        
-        for rate in rates:
-            if np.isfinite(rate):
-                pct_diff = np.abs(rate - msm_rate) / msm_rate * 100
-                diff_to_msm_all.append(pct_diff)
-    
-    # Calculate shared y-limits from all data
-    if diff_to_msm_all:
-        y_min = 0
-        y_max = np.max(diff_to_msm_all) * 1.1  # 10% padding above max
-    else:
-        y_min = 0
-        y_max = 1
-    
-    # Create single figure with both reaction coordinates overlaid
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    for rc in ["cnn", "lcs"]:
-        if rc not in data_dict:
-            continue
-        
-        # Find MSM rate for this (beta, h, rc)
-        mask_msm = (np.isclose(msm_data["beta"], beta, atol=5e-4) & 
-                    np.isclose(msm_data["h"], h, atol=5e-4) & 
-                    (msm_data["rc"] == rc))
-        
-        if not np.any(mask_msm):
-            continue
-        
-        msm_rate = float(msm_data["J_central"][mask_msm][0])
-        
-        if not np.isfinite(msm_rate) or msm_rate <= 0:
-            continue
-        
-        data = data_dict[rc]
-        
-        # Get data arrays (starting from first_valid_idx) and apply combined mask
-        sample_counts = np.asarray(data["sample_counts"], dtype=float)[first_valid_idx:]
-        rates = np.asarray(data["rates"], dtype=float)[first_valid_idx:]
-        
-        sample_counts = sample_counts[combined_valid_mask]
-        rates = rates[combined_valid_mask]
-        
-        if len(rates) == 0:
-            print(f"Warning: No valid data points for {rc}")
-            continue
-        
-        # Calculate percentage difference from MSM rate
-        diff_to_msm = []
-        valid_sample_counts = []
-        
-        for sample_count, rate in zip(sample_counts, rates):
-            if np.isfinite(rate):
-                pct_diff = np.abs(rate - msm_rate) / msm_rate * 100
-                diff_to_msm.append(pct_diff)
-                valid_sample_counts.append(sample_count)
-        
-        diff_to_msm = np.asarray(diff_to_msm)
-        valid_sample_counts = np.asarray(valid_sample_counts)
-        
-        if len(diff_to_msm) == 0:
-            print(f"Warning: No valid differences for {rc}")
-            continue
-        
-        color = rc_colors_base[rc]
-        marker = rc_markers[rc]
-        
-        # Plot difference to MSM rate
-        ax.plot(
-            valid_sample_counts,
-            diff_to_msm,
-            marker=marker,
-            markersize=10,
-            linestyle="-",
-            linewidth=2,
-            color=color,
-            alpha=0.8,
-            label=rc_names[rc],
-            zorder=3,
-        )
-        
-    # Set axis labels and properties
-    ax.set_xlabel("Sample Count per Row")
-    ax.set_ylabel("Percentage Difference from MSM (%)")
-    ax.set_title(f"Convergence to MSM Rate (β={beta:.3f}, h={h:.3f})")
-    ax.set_xscale("log")
-    ax.set_ylim(y_min, y_max)
-    ax.grid(True, which="both", alpha=0.2)
-    ax.legend(loc="best", fontsize=FONT_SIZE * 0.9)
-    
-    plt.tight_layout()
-    
-    out_path = out_dir / f"convergence_rate_{beta:.3f}_{h:.3f}.svg"
-    plt.savefig(out_path, bbox_inches="tight")
-    plt.close()
-    
-    print(f"Saved convergence rate plot to {out_path}")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--msm-dir",
         type=str,
         default="data",
-        help="Directory containing per-run MSM analysis files msm_analysis_*.npz",
+        help="Directory containing compact deeptime MSM analysis files msm_analysis_*.npz",
     )
     parser.add_argument(
         "--out",
@@ -787,28 +270,21 @@ def main() -> None:
     msm = _load_msm_per_run_files(Path(args.msm_dir))
     beta = msm["beta"]
     h = msm["h"]
-    m = msm["m"]
     rc = msm["rc"]
 
-    # Prefer central estimate if present.
     J = np.asarray(msm["J_central"], dtype=float)
-    J_label = r"I MCSS$^{-1}$"
     J_std = np.asarray(msm["J_std"], dtype=float)
     J_ci_low = np.asarray(msm["J_ci_low"], dtype=float)
     J_ci_high = np.asarray(msm["J_ci_high"], dtype=float)
 
-    # Optional beta window
     mask_beta = _beta_window_mask(beta, args.beta_min, args.beta_max)
     beta = beta[mask_beta]
     h = h[mask_beta]
     J = J[mask_beta]
     rc = rc[mask_beta]
-    if J_std is not None:
-        J_std = J_std[mask_beta]
-    if J_ci_low is not None:
-        J_ci_low = J_ci_low[mask_beta]
-    if J_ci_high is not None:
-        J_ci_high = J_ci_high[mask_beta]
+    J_std = J_std[mask_beta]
+    J_ci_low = J_ci_low[mask_beta]
+    J_ci_high = J_ci_high[mask_beta]
 
     unique_rc = _unique_sorted(rc)
 
@@ -826,7 +302,6 @@ def main() -> None:
     if brute["beta"].size == 0:
         raise ValueError("No brute-force points remain after applying --beta-min/--beta-max.")
 
-    # Hardcoded filter: only keep the highest h values for each beta.
     beta_all = np.concatenate([beta, brute["beta"]]) if beta.size > 0 else np.asarray(brute["beta"], dtype=float)
     h_all = np.concatenate([h, brute["h"]]) if h.size > 0 else np.asarray(brute["h"], dtype=float)
     allowed_pairs = _top_h_pair_set(beta_all, h_all, MAX_H_VALUES_PER_BETA)
@@ -836,29 +311,23 @@ def main() -> None:
     h = h[mask_top_h_msm]
     J = J[mask_top_h_msm]
     rc = rc[mask_top_h_msm]
-    if J_std is not None:
-        J_std = J_std[mask_top_h_msm]
-    if J_ci_low is not None:
-        J_ci_low = J_ci_low[mask_top_h_msm]
-    if J_ci_high is not None:
-        J_ci_high = J_ci_high[mask_top_h_msm]
+    J_std = J_std[mask_top_h_msm]
+    J_ci_low = J_ci_low[mask_top_h_msm]
+    J_ci_high = J_ci_high[mask_top_h_msm]
 
     mask_top_h_brute = _pair_mask(brute["beta"], brute["h"], allowed_pairs)
     for k in list(brute.keys()):
         brute[k] = np.asarray(brute[k])[mask_top_h_brute]
 
-    # Plot h values present in either MSM or brute data.
     if h.size > 0:
         unique_h = _unique_sorted(np.concatenate([h, brute["h"]]))
     else:
         unique_h = _unique_sorted(brute["h"])
 
-    # Output directory
     out_dir = Path(config.paths.plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / args.out
 
-    # Plot
     fig_w, fig_h = float(args.figsize[0]), float(args.figsize[1])
     fig = plt.figure(figsize=(fig_w, fig_h))
     ax = plt.gca()
@@ -870,14 +339,12 @@ def main() -> None:
     }
     brute_annotations: list[tuple[float, float, str, tuple[float, float, float, float], int]] = []
 
-    # Create color mapping based on beta values
     unique_beta_all = _unique_sorted(np.concatenate([beta, brute["beta"]]))
     beta_to_color = {}
     for idx, b in enumerate(unique_beta_all):
         beta_to_color[b] = cmap(idx % 10)
 
-    for idx, h_val in enumerate(unique_h):
-
+    for h_val in unique_h:
         for rc_val in rc_to_plot:
             if rc_val not in set(unique_rc.tolist()):
                 continue
@@ -886,47 +353,35 @@ def main() -> None:
             if not np.any(mask):
                 continue
 
-            # Get unique betas for this (h, rc) combination
             betas_for_hrc = np.unique(beta[mask])
-            
             for b_val in betas_for_hrc:
-                # Plot only points with this beta
                 mask_b = mask & np.isclose(beta, b_val, atol=5e-4)
-                
+
                 beta_h = beta[mask_b]
                 J_h = J[mask_b]
-                J_std_h = J_std[mask_b] if J_std is not None else None
-                J_ci_low_h = J_ci_low[mask_b] if J_ci_low is not None else None
-                J_ci_high_h = J_ci_high[mask_b] if J_ci_high is not None else None
+                J_std_h = J_std[mask_b]
+                J_ci_low_h = J_ci_low[mask_b]
+                J_ci_high_h = J_ci_high[mask_b]
 
                 order = np.argsort(beta_h)
                 beta_h = beta_h[order]
                 J_h = J_h[order]
-                if J_std_h is not None:
-                    J_std_h = J_std_h[order]
-                if J_ci_low_h is not None:
-                    J_ci_low_h = J_ci_low_h[order]
-                if J_ci_high_h is not None:
-                    J_ci_high_h = J_ci_high_h[order]
+                J_std_h = J_std_h[order]
+                J_ci_low_h = J_ci_low_h[order]
+                J_ci_high_h = J_ci_high_h[order]
 
-                # MSM points + error bars
                 yerr_msm = None
-                if (
-                    J_ci_low_h is not None
-                    and J_ci_high_h is not None
-                    and np.all(np.isfinite(J_ci_low_h))
-                    and np.all(np.isfinite(J_ci_high_h))
-                ):
+                if np.all(np.isfinite(J_ci_low_h)) and np.all(np.isfinite(J_ci_high_h)):
                     yerr_msm = _asym_yerr(J_h, J_ci_low_h, J_ci_high_h)
-                elif J_std_h is not None and np.any(np.isfinite(J_std_h)):
+                elif np.any(np.isfinite(J_std_h)):
                     yerr_msm = np.where(np.isfinite(J_std_h), J_std_h, 0.0)
 
                 c = beta_to_color[b_val]
                 plot_color = c
                 if rc_val == "cnn":
-                    plot_color = adjust_lightness(c, 0.8)   # 10% darker
+                    plot_color = adjust_lightness(c, 0.8)
                 elif rc_val == "lcs":
-                    plot_color = adjust_lightness(c, 1.2)   # 10% lighter
+                    plot_color = adjust_lightness(c, 1.2)
                 style = rc_style.get(rc_val, {"fmt": "o", "linestyle": "-", "markersize": 7})
                 plt.errorbar(
                     beta_h,
@@ -943,16 +398,13 @@ def main() -> None:
                     zorder=3,
                 )
 
-        # Brute-force overlay for this h (always)
         mask_b = np.isclose(brute["h"], float(h_val), atol=5e-4)
         if np.any(mask_b):
-            # Get unique betas for brute-force at this h
             brute_betas = np.unique(brute["beta"][mask_b])
-            
+
             for b_val in brute_betas:
-                # Plot only brute-force points with this beta
                 mask_b_beta = mask_b & np.isclose(brute["beta"], b_val, atol=5e-4)
-                
+
                 beta_b = brute["beta"][mask_b_beta]
                 J_b = brute["rate_per_site"][mask_b_beta]
                 se_b = brute["rate_per_site_se"][mask_b_beta]
@@ -987,7 +439,6 @@ def main() -> None:
                     zorder=2,
                 )
 
-                # Annotate each brute-force point with its field value.
                 h_text = f"h={float(h_val):.3f}"
                 for j, (xb, yb) in enumerate(zip(beta_b.tolist(), J_b.tolist())):
                     brute_annotations.append((float(xb), float(yb), h_text, c, j))
@@ -1090,7 +541,6 @@ def main() -> None:
         if selected_bbox is not None:
             placed_label_bboxes.append(selected_bbox)
 
-    # Style legend (marker/linestyle meanings)
     style_handles: list[Line2D] = []
     if "cnn" in set(unique_rc.tolist()) and "cnn" in rc_to_plot:
         style_handles.append(
@@ -1098,9 +548,7 @@ def main() -> None:
         )
     if "lcs" in set(unique_rc.tolist()) and "lcs" in rc_to_plot:
         style_handles.append(
-            Line2D(
-                [0], [0], color="black", marker="s", linestyle="None", markersize=6.5, label="LCS"
-            )
+            Line2D([0], [0], color="black", marker="s", linestyle="None", markersize=6.5, label="LCS")
         )
     style_handles.append(
         Line2D([0], [0], color="black", marker="x", linestyle="None", markersize=8, label="Brute force")
@@ -1118,22 +566,6 @@ def main() -> None:
     plt.close()
 
     print(f"Saved plot to {out_path}")
-    
-    # Plot rate vs samples for hardcoded (beta, h)
-    # User can modify these values as needed
-    sample_plot_beta = 0.511
-    sample_plot_h = 0.058
-    plot_rate_vs_samples(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config, brute=brute)
-    plot_convergence_rate(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config)
-    sample_plot_h = 0.04
-    plot_rate_vs_samples(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config, brute=brute)
-    plot_convergence_rate(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config)
-    sample_plot_h = 0.028
-    plot_rate_vs_samples(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config, brute=brute)
-    plot_convergence_rate(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config)
-    
-    # Plot convergence rate (percentage difference between consecutive estimates)
-    plot_convergence_rate(Path(args.msm_dir), sample_plot_beta, sample_plot_h, out_dir, config)
 
 
 if __name__ == "__main__":
