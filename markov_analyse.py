@@ -283,38 +283,32 @@ def resample_count_matrix_to_samples(C_original: np.ndarray, target_samples_per_
     return C_resampled
 
 
-def choose_best_lag_score(ms, J, ck, PAA):
+def choose_best_lag_score(ms, J, ck, PAA, its_change):
     ms = np.asarray(ms)
-    J = np.asarray(J, dtype=float)
+    J = np.asarray(J, dtype=float)  # kept for compatibility but not used in scoring
     ck = np.asarray(ck, dtype=float)
     PAA = np.asarray(PAA, dtype=float)  # kept for compatibility but not used in scoring
-
-    # Compute stability metric: relative change in rate to next lag
-    rel_change = np.full(len(J), np.inf, dtype=float)
-    rel_change[:-1] = np.abs(np.diff(J)) / np.maximum(np.abs(J[:-1]), 1e-300)
-
-    # Final lag cannot be selected based on stability (no next lag exists)
-    rel_change[-1] = np.inf
+    its_change = np.asarray(its_change, dtype=float)
 
     # Rank both metrics (smaller is better for both)
-    rank_stability = rank_better_is_smaller(rel_change)
+    rank_its = rank_better_is_smaller(its_change)
     rank_ck = rank_better_is_smaller(ck)
 
-    # Combine ranks by summing
-    score = rank_stability + rank_ck
+    score = rank_its
 
-    # Find best lag (lowest combined rank, tie-break by smallest m)
+    # Find best lag by ITS stability, tie-break by CK error and then smallest m.
     best_score = np.min(score)
     candidates = np.where(score == best_score)[0]
+    best_ck_rank = np.min(rank_ck[candidates])
+    candidates = candidates[rank_ck[candidates] == best_ck_rank]
     best_idx = candidates[np.argmin(ms[candidates])]
-    best_idx = 8
 
     return {
         "best_idx": int(best_idx),
         "best_m": int(ms[best_idx]),
         "score": score,
-        "rel_change": rel_change,
-        "rank_stability": rank_stability,
+        "its_change": its_change,
+        "rank_its": rank_its,
         "rank_ck": rank_ck,
     }
 
@@ -474,26 +468,32 @@ def analyse_one(beta: float, h: float, rc: str, n_boot: int, rng_seed: int | Non
     J = np.array([r["J_central"] for r in records], dtype=float)
     ck = np.array([r["ck_max_abs"] for r in records], dtype=float)
     PAA = np.array([r["P_AA"] for r in records], dtype=float)
+    its_first5 = np.stack([r["its_first5"] for r in records], axis=0)
+    t1 = its_first5[:, 0]
+    its_change = np.full(len(t1), np.inf, dtype=float)
+    if len(t1) > 1:
+        its_change[:-1] = np.abs(t1[1:] - t1[:-1]) / np.maximum(np.abs(t1[:-1]), 1e-300)
+    its_change[-1] = np.inf
 
-    lag_choice = choose_best_lag_score(ms, J, ck, PAA)
+    lag_choice = choose_best_lag_score(ms, J, ck, PAA, its_change)
 
     for i, r in enumerate(records):
         r["lag_score"] = float(lag_choice["score"][i])
-        r["lag_rel_change"] = float(lag_choice["rel_change"][i])
+        r["lag_its_change"] = float(lag_choice["its_change"][i])
         r["lag_is_selected"] = bool(i == lag_choice["best_idx"])
 
     if verbose:
         print("\n=== Automatic lag selection ===")
         for i, m in enumerate(ms):
-            rel = lag_choice["rel_change"][i]
-            rel_str = f"{rel:.6e}" if np.isfinite(rel) else "inf"
+            its = lag_choice["its_change"][i]
+            its_str = f"{its:.6e}" if np.isfinite(its) else "inf"
             print(
                 f"m={m:4d}  "
-                f"rank_stab={lag_choice['rank_stability'][i]:.0f}  "
+                f"rank_its={lag_choice['rank_its'][i]:.0f}  "
                 f"rank_ck={lag_choice['rank_ck'][i]:.0f}  "
                 f"score={lag_choice['score'][i]:.0f}  "
                 f"ck={ck[i]:.6e}  "
-                f"rel_change={rel_str}"
+                f"its_change={its_str}"
             )
         print(f"Selected lag: m={lag_choice['best_m']}")
 
@@ -551,7 +551,7 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
     J_ci_high = np.array([r["J_ci_high"] for r in records], dtype=float)
 
     lag_score = np.array([r["lag_score"] for r in records], dtype=float)
-    lag_rel_change = np.array([r["lag_rel_change"] for r in records], dtype=float)
+    lag_its_change = np.array([r["lag_its_change"] for r in records], dtype=float)
     lag_is_selected = np.array([r["lag_is_selected"] for r in records], dtype=bool)
 
     n_boot = np.array([r["n_boot"] for r in records], dtype=int)
@@ -598,7 +598,7 @@ def save_records_npz(records: list[dict], out_path: Path) -> None:
         J_ci_low=J_ci_low,
         J_ci_high=J_ci_high,
         lag_score=lag_score,
-        lag_rel_change=lag_rel_change,
+        lag_its_change=lag_its_change,
         lag_is_selected=lag_is_selected,
         n_boot=n_boot,
         rng_seed=rng_seed,
