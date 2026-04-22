@@ -110,6 +110,74 @@ def _pair_mask(beta: np.ndarray, h: np.ndarray, allowed_pairs: set[tuple[float, 
     return mask
 
 
+def _h_band_labels(beta: np.ndarray, h: np.ndarray) -> dict[tuple[float, float], str]:
+    beta = np.asarray(beta, dtype=float)
+    h = np.asarray(h, dtype=float)
+    labels: dict[tuple[float, float], str] = {}
+
+    for beta_val in np.unique(beta):
+        mask_b = np.isclose(beta, beta_val, atol=5e-4)
+        h_values = np.sort(np.unique(h[mask_b]))
+        if h_values.size == 0:
+            continue
+
+        if h_values.size == 1:
+            band_for_h = {float(h_values[0]): "medium"}
+        elif h_values.size == 2:
+            band_for_h = {float(h_values[0]): "low", float(h_values[-1]): "high"}
+        else:
+            band_for_h = {
+                float(h_values[0]): "low",
+                float(h_values[h_values.size // 2]): "medium",
+                float(h_values[-1]): "high",
+            }
+
+        for h_val, band in band_for_h.items():
+            labels[(float(beta_val), float(h_val))] = band
+
+    return labels
+
+
+def _brute_rate_for_pair(brute: dict[str, np.ndarray], beta_val: float, h_val: float) -> float:
+    mask = np.isclose(brute["beta"], beta_val, atol=5e-4) & np.isclose(brute["h"], h_val, atol=5e-4)
+    if not np.any(mask):
+        return np.nan
+    return float(brute["rate_per_site"][np.where(mask)[0][0]])
+
+
+def _print_average_percentage_differences(beta, h, rc, J, brute) -> None:
+    band_labels = _h_band_labels(np.concatenate([beta, brute["beta"]]), np.concatenate([h, brute["h"]]))
+    values: dict[tuple[str, str], list[float]] = {
+        (band, rc_val): [] for band in ("low", "medium", "high") for rc_val in ("cnn", "lcs")
+    }
+
+    for beta_val, h_val, rc_val, rate in zip(beta, h, rc, J):
+        rc_val = str(rc_val)
+        if rc_val not in {"cnn", "lcs"}:
+            continue
+
+        band = band_labels.get((float(beta_val), float(h_val)))
+        if band is None:
+            continue
+
+        brute_rate = _brute_rate_for_pair(brute, float(beta_val), float(h_val))
+        if not np.isfinite(brute_rate) or brute_rate == 0 or not np.isfinite(rate):
+            continue
+
+        pct_diff = abs(float(rate) - brute_rate) / abs(brute_rate) * 100.0
+        values[(band, rc_val)].append(pct_diff)
+
+    print("\nAverage absolute percentage difference to brute-force rate:")
+    for band in ("high", "medium", "low"):
+        for rc_val in ("cnn", "lcs"):
+            diffs = values[(band, rc_val)]
+            label = "q-NN" if rc_val == "cnn" else "LCS"
+            if diffs:
+                print(f"  {band:6s} h | {label:4s}: {np.mean(diffs):.3f}% over {len(diffs)} points")
+            else:
+                print(f"  {band:6s} h | {label:4s}: no matched points")
+
+
 def _as_scalar(value, dtype=float):
     return np.asarray(value, dtype=dtype).ravel()[0]
 
@@ -235,7 +303,7 @@ def main() -> None:
         "--figsize",
         type=float,
         nargs=2,
-        default=(12.0, 5.0),
+        default=(12.0, 4.0),
         metavar=("W", "H"),
         help="Figure size in inches: width height",
     )
@@ -323,6 +391,8 @@ def main() -> None:
         unique_h = _unique_sorted(np.concatenate([h, brute["h"]]))
     else:
         unique_h = _unique_sorted(brute["h"])
+
+    _print_average_percentage_differences(beta, h, rc, J, brute)
 
     out_dir = Path(config.paths.plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -496,7 +566,7 @@ def main() -> None:
                 ha=("right" if dx < 0 else "left"),
                 va=("top" if dy < 0 else "bottom"),
                 color=c,
-                fontsize=FONT_SIZE * 0.85,
+                fontsize=FONT_SIZE * 0.75,
                 alpha=0.9,
                 annotation_clip=True,
                 clip_on=True,
