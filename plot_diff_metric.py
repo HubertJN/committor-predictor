@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 from scipy.optimize import curve_fit
 
 from utils.architecture import CNN
@@ -52,6 +53,11 @@ plt.rcParams.update(
 )
 
 mpl.rcParams["svg.fonttype"] = "none"
+
+
+def lighten_color(color: str, amount: float = 0.25):
+    rgb = np.asarray(mcolors.to_rgb(color), dtype=float)
+    return tuple(rgb + (1.0 - rgb) * amount)
 
 
 def load_runs_from_csv(csv_path: str | Path) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
@@ -593,7 +599,13 @@ def main() -> None:
         Line2D([0], [0], marker="s", color="w", markerfacecolor="black", markersize=10, label="LCS"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor="black", markersize=10, label="q-NN"),
     ]
-    legend1 = ax.legend(handles=marker_handles, loc="upper left", bbox_to_anchor=(1.05, 1))
+    legend1 = ax.legend(
+        handles=marker_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.22, -0.18),
+        ncol=len(marker_handles),
+        frameon=True,
+    )
     ax.add_artist(legend1)
 
     # Create legend 2: colors (Field strength)
@@ -602,7 +614,13 @@ def main() -> None:
         Line2D([0], [0], color=colors["forest_green"], linewidth=3, label="B"),
         Line2D([0], [0], color=colors["steel_blue"], linewidth=3, label="C"),
     ]
-    legend2 = ax.legend(handles=color_handles, loc="upper left", bbox_to_anchor=(1.05, 0.75))
+    legend2 = ax.legend(
+        handles=color_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.72, -0.18),
+        ncol=len(color_handles),
+        frameon=True,
+    )
     
     # Color the legend labels to match line colors
     for text, color in zip(legend2.get_texts()[:], [colors["firebrick_red"], colors["forest_green"], colors["steel_blue"]]):
@@ -621,12 +639,19 @@ def main() -> None:
     def create_scatter_plot(y_true, y_pred, metric_label, beta, h, fraction_outside, args, out_dir, config, highlight_worst=False, highlight_best=False):
         plt.figure(figsize=(5, 5))
         ax = plt.gca()
+        metric_marker = "s" if metric_label.lower() in {"cluster", "cluster size", "lcs"} else "o"
         
         # Bin target committor into 50 bins and subsample predictions uniformly
         n_bins = 50
         bin_edges = np.linspace(0, 1, n_bins + 1)
-        subsampled_y_true = []
-        subsampled_y_pred = []
+        selected_indices = []
+        errors = np.abs(y_pred - y_true)
+        best_idx = int(np.argmin(errors))
+        worst_idx = int(np.argmax(errors))
+        central_mask = (y_true >= 0.2) & (y_true <= 0.8)
+        if np.any(central_mask):
+            central_indices = np.arange(len(y_true))[central_mask]
+            best_idx = int(central_indices[np.argmin(errors[central_mask])])
         
         for i in range(n_bins):
             # Get indices of points in this bin
@@ -641,15 +666,13 @@ def main() -> None:
             
             # Get predicted committors for this bin
             bin_preds = y_pred[bin_indices]
-            bin_true = y_true[bin_indices]
             
             # Sort by predicted committor
             sort_idx = np.argsort(bin_preds)
-            sorted_preds = bin_preds[sort_idx]
-            sorted_true = bin_true[sort_idx]
+            sorted_bin_indices = bin_indices[sort_idx]
             
             # Uniformly select 50 points including both endpoints
-            n_points = len(sorted_preds)
+            n_points = len(sorted_bin_indices)
             to_sample = 10
             if n_points <= to_sample:
                 # Include all points if we have 50 or fewer
@@ -658,14 +681,23 @@ def main() -> None:
                 # Uniformly select 50 points from sorted predictions
                 uniform_indices = np.round(np.linspace(0, n_points - 1, to_sample)).astype(int)
             
-            subsampled_y_true.extend(sorted_true[uniform_indices])
-            subsampled_y_pred.extend(sorted_preds[uniform_indices])
+            selected_indices.extend(sorted_bin_indices[uniform_indices].tolist())
         
-        subsampled_y_true = np.array(subsampled_y_true)
-        subsampled_y_pred = np.array(subsampled_y_pred)
+        selected_indices.extend([best_idx, worst_idx])
+        selected_indices = np.asarray(sorted(set(selected_indices)), dtype=int)
+        subsampled_y_true = y_true[selected_indices]
+        subsampled_y_pred = y_pred[selected_indices]
         
         # Scatter plot
-        ax.scatter(subsampled_y_true, subsampled_y_pred, alpha=0.5, s=30, color=colors["steel_blue"], zorder=2)
+        ax.scatter(
+            subsampled_y_true,
+            subsampled_y_pred,
+            alpha=0.5,
+            s=30,
+            marker=metric_marker,
+            color=colors["steel_blue"],
+            zorder=2,
+        )
         
         # Diagonal line (perfect prediction, red, from 0 to 1)
         ax.plot([0, 1], [0, 1], "-", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=4)
@@ -684,28 +716,41 @@ def main() -> None:
         ax.plot(y_band, lower_bound, "--", color=colors["firebrick_red"], linewidth=2, alpha=0.7, zorder=4)
         ax.fill_between(y_band, lower_bound, upper_bound, color=colors["firebrick_red"], alpha=0.1, zorder=3)
         
-        # Highlight worst and/or best points if requested
-        errors = np.abs(y_pred - y_true)
-        
         if highlight_worst:
             # Calculate error for all points (use unsubsampled data)
-            worst_idx = np.argmax(errors)
             worst_true = y_true[worst_idx]
             worst_pred = y_pred[worst_idx]
             
-            # Draw circle around worst point
-            circle = plt.Circle((worst_true, worst_pred), radius=0.03, fill=False, edgecolor=colors["firebrick_red"], linewidth=2.5, zorder=5)
-            ax.add_patch(circle)
+            # Draw open circle around worst point
+            ax.scatter(
+                [worst_true],
+                [worst_pred],
+                s=200,
+                marker="o",
+                facecolors="none",
+                edgecolors=lighten_color(colors["firebrick_red"], 0.25),
+                linewidths=2.5,
+                label="Worst",
+                zorder=10,
+            )
         
         if highlight_best:
             # Find best point (minimum error)
-            best_idx = np.argmin(errors)
             best_true = y_true[best_idx]
             best_pred = y_pred[best_idx]
             
-            # Draw circle around best point in green
-            circle = plt.Circle((best_true, best_pred), radius=0.03, fill=False, edgecolor=colors["forest_green"], linewidth=2.5, zorder=5)
-            ax.add_patch(circle)
+            # Draw open circle around best point in green
+            ax.scatter(
+                [best_true],
+                [best_pred],
+                s=200,
+                marker="o",
+                facecolors="none",
+                edgecolors=lighten_color(colors["forest_green"], 0.5),
+                linewidths=2.5,
+                label="Best",
+                zorder=10,
+            )
         
         ax.set_xlabel("Target Committor")
         ax.set_ylabel(f"Predicted Committor")
@@ -713,8 +758,8 @@ def main() -> None:
         ax.grid(True, alpha=0.2, zorder=0)
         ax.legend()
         ax.set_aspect("equal")
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
+        #ax.set_xlim(0, 1)
+        #ax.set_ylim(0, 1)
         
         return plt.gcf()
     
@@ -732,7 +777,7 @@ def main() -> None:
     if worst_cluster_beta is not None and worst_cluster_h is not None:
         y_true_worst_cluster, _, y_pred_cluster_worst = all_predictions[(worst_cluster_beta, worst_cluster_h)]
 
-        create_scatter_plot(y_true_worst_cluster, y_pred_cluster_worst, "Cluster Size", worst_cluster_beta, worst_cluster_h, worst_cluster_fraction, args, out_dir, config, highlight_worst=True, highlight_best=False)
+        create_scatter_plot(y_true_worst_cluster, y_pred_cluster_worst, "Cluster Size", worst_cluster_beta, worst_cluster_h, worst_cluster_fraction, args, out_dir, config, highlight_worst=True, highlight_best=True)
         worst_cluster_path = out_dir / f"committor_scatter_cluster_{worst_cluster_beta:.3f}_{worst_cluster_h:.3f}.svg"
         plt.savefig(worst_cluster_path, bbox_inches='tight')
         plt.close()
