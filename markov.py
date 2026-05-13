@@ -6,8 +6,8 @@ from pathlib import Path
 from utils.config import load_config
 from utils.architecture import CNN
 from utils.dataset import load_hdf5_raw, uniform_filter
+from utils.clusters import largest_cluster_sizes_up
 import gasp
-from scipy.ndimage import label
 np.set_printoptions(linewidth=np.inf)
 import matplotlib.pyplot as plt
 
@@ -70,23 +70,6 @@ def _uniform_filter_any(labels: np.ndarray, num_bins: int = 10, seed: int = 42, 
     chosen = np.array(sorted(set(int(i) for i in chosen)), dtype=int)
     print(f"Selected {chosen.size} samples approximately uniformly across {num_bins} quantile bins")
     return chosen
-
-
-def largest_cluster_size_up(grid_2d: np.ndarray) -> int:
-    labeled_array, num_features = label(grid_2d > 0)
-    if num_features == 0:
-        return 0
-    sizes = np.bincount(labeled_array.ravel())
-    if sizes.size <= 1:
-        return 0
-    return int(sizes[1:].max())
-
-
-def largest_cluster_sizes_up(frames: np.ndarray) -> np.ndarray:
-    out = np.empty(frames.shape[0], dtype=np.float64)
-    for i in range(frames.shape[0]):
-        out[i] = largest_cluster_size_up(frames[i])
-    return out
 
 
 def evaluate_increasing_ones_grid(

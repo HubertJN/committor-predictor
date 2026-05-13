@@ -11,6 +11,7 @@ import matplotlib.colors as mcolors
 from scipy.optimize import curve_fit
 
 from utils.architecture import CNN
+from utils.clusters import fk_largest_cluster_sizes_up
 from utils.dataset import prepare_subset, prepare_datasets
 from utils.config import load_config
 
@@ -180,34 +181,43 @@ def _save_data_cache(cache_path: str | Path, data: dict) -> None:
     pred_y_true = []
     pred_y_pred = []
     pred_y_pred_cluster = []
+    pred_y_pred_fk = []
     
-    for (beta, h), (y_true, y_pred, y_pred_cluster) in all_preds.items():
+    for (beta, h), (y_true, y_pred, y_pred_cluster, y_pred_fk) in all_preds.items():
         pred_keys.append([beta, h])
         pred_y_true.append(y_true)
         pred_y_pred.append(y_pred)
         pred_y_pred_cluster.append(y_pred_cluster)
+        pred_y_pred_fk.append(y_pred_fk)
     
     np.savez_compressed(
         str(cache_path),
         betas=np.array(data["betas"]),
         fractions_cnn=np.array(data["fractions_cnn"]),
         fractions_cluster=np.array(data["fractions_cluster"]),
+        fractions_fk=np.array(data["fractions_fk"]),
         betas_new=np.array(data["betas_new"]),
         fractions_cnn_new=np.array(data["fractions_cnn_new"]),
         fractions_cluster_new=np.array(data["fractions_cluster_new"]),
+        fractions_fk_new=np.array(data["fractions_fk_new"]),
         betas_newer=np.array(data["betas_newer"]),
         fractions_cnn_newer=np.array(data["fractions_cnn_newer"]),
         fractions_cluster_newer=np.array(data["fractions_cluster_newer"]),
+        fractions_fk_newer=np.array(data["fractions_fk_newer"]),
         worst_cnn_fraction=np.array([data["worst_cnn_fraction"]]),
         worst_cnn_beta=np.array([data["worst_cnn_beta"]]),
         worst_cnn_h=np.array([data["worst_cnn_h"]]),
         worst_cluster_fraction=np.array([data["worst_cluster_fraction"]]),
         worst_cluster_beta=np.array([data["worst_cluster_beta"]]),
         worst_cluster_h=np.array([data["worst_cluster_h"]]),
+        worst_fk_fraction=np.array([data["worst_fk_fraction"]]),
+        worst_fk_beta=np.array([data["worst_fk_beta"]]),
+        worst_fk_h=np.array([data["worst_fk_h"]]),
         pred_keys=np.array(pred_keys),
         pred_y_true=np.array(pred_y_true, dtype=object),
         pred_y_pred=np.array(pred_y_pred, dtype=object),
         pred_y_pred_cluster=np.array(pred_y_pred_cluster, dtype=object),
+        pred_y_pred_fk=np.array(pred_y_pred_fk, dtype=object),
     )
     print(f"Saved data cache to {cache_path}")
 
@@ -220,6 +230,19 @@ def _load_data_cache(cache_path: str | Path) -> dict | None:
     
     try:
         cached = np.load(str(cache_path), allow_pickle=True)
+        required_keys = {
+            "fractions_fk",
+            "fractions_fk_new",
+            "fractions_fk_newer",
+            "worst_fk_fraction",
+            "worst_fk_beta",
+            "worst_fk_h",
+            "pred_y_pred_fk",
+        }
+        missing = sorted(required_keys.difference(cached.files))
+        if missing:
+            print(f"Cache is missing FK fields ({', '.join(missing)}); regenerating.")
+            return None
         
         # Reconstruct predictions dict from NPZ data
         all_predictions = {}
@@ -229,24 +252,31 @@ def _load_data_cache(cache_path: str | Path) -> dict | None:
                 cached["pred_y_true"][i].astype(np.float64),
                 cached["pred_y_pred"][i].astype(np.float64),
                 cached["pred_y_pred_cluster"][i].astype(np.float64),
+                cached["pred_y_pred_fk"][i].astype(np.float64),
             )
         
         data = {
             "betas": cached["betas"].tolist(),
             "fractions_cnn": cached["fractions_cnn"].tolist(),
             "fractions_cluster": cached["fractions_cluster"].tolist(),
+            "fractions_fk": cached["fractions_fk"].tolist(),
             "betas_new": cached["betas_new"].tolist(),
             "fractions_cnn_new": cached["fractions_cnn_new"].tolist(),
             "fractions_cluster_new": cached["fractions_cluster_new"].tolist(),
+            "fractions_fk_new": cached["fractions_fk_new"].tolist(),
             "betas_newer": cached["betas_newer"].tolist(),
             "fractions_cnn_newer": cached["fractions_cnn_newer"].tolist(),
             "fractions_cluster_newer": cached["fractions_cluster_newer"].tolist(),
+            "fractions_fk_newer": cached["fractions_fk_newer"].tolist(),
             "worst_cnn_fraction": float(cached["worst_cnn_fraction"][0]),
             "worst_cnn_beta": float(cached["worst_cnn_beta"][0]),
             "worst_cnn_h": float(cached["worst_cnn_h"][0]),
             "worst_cluster_fraction": float(cached["worst_cluster_fraction"][0]),
             "worst_cluster_beta": float(cached["worst_cluster_beta"][0]),
             "worst_cluster_h": float(cached["worst_cluster_h"][0]),
+            "worst_fk_fraction": float(cached["worst_fk_fraction"][0]),
+            "worst_fk_beta": float(cached["worst_fk_beta"][0]),
+            "worst_fk_h": float(cached["worst_fk_h"][0]),
             "all_predictions": all_predictions,
         }
         print(f"Loaded data cache from {cache_path}")
@@ -271,6 +301,7 @@ def main() -> None:
     parser.add_argument("--out", type=str, default="diff_metric_vs_beta.svg", help="Output filename")
     parser.add_argument("--csv", type=str, default="h_beta_dn_up.csv", help="Path to CSV file with h,beta,dn,up columns")
     parser.add_argument("--data-cache", type=str, default="diff_metric_data.npz", help="Path to data cache file")
+    parser.add_argument("--fk-seed", type=int, default=12345, help="Base RNG seed for single-draw FK clusters")
     parser.add_argument("--regenerate", action="store_true", default=False, help="Regenerate data cache instead of loading from disk")
     args = parser.parse_args()
 
@@ -295,12 +326,15 @@ def main() -> None:
         # Use cached data
         fractions_cnn = cached_data["fractions_cnn"]
         fractions_cluster = cached_data["fractions_cluster"]
+        fractions_fk = cached_data["fractions_fk"]
         betas = cached_data["betas"]
         fractions_cnn_new = cached_data["fractions_cnn_new"]
         fractions_cluster_new = cached_data["fractions_cluster_new"]
+        fractions_fk_new = cached_data["fractions_fk_new"]
         betas_new = cached_data["betas_new"]
         fractions_cnn_newer = cached_data["fractions_cnn_newer"]
         fractions_cluster_newer = cached_data["fractions_cluster_newer"]
+        fractions_fk_newer = cached_data["fractions_fk_newer"]
         betas_newer = cached_data["betas_newer"]
         all_predictions = cached_data["all_predictions"]
         worst_cnn_fraction = cached_data["worst_cnn_fraction"]
@@ -309,30 +343,39 @@ def main() -> None:
         worst_cluster_fraction = cached_data["worst_cluster_fraction"]
         worst_cluster_beta = cached_data["worst_cluster_beta"]
         worst_cluster_h = cached_data["worst_cluster_h"]
+        worst_fk_fraction = cached_data["worst_fk_fraction"]
+        worst_fk_beta = cached_data["worst_fk_beta"]
+        worst_fk_h = cached_data["worst_fk_h"]
     else:
         # Collect data from scratch
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         fractions_cnn: list[float] = []
         fractions_cluster: list[float] = []
+        fractions_fk: list[float] = []
         betas: list[float] = []
         
         fractions_cnn_new: list[float] = []
         fractions_cluster_new: list[float] = []
+        fractions_fk_new: list[float] = []
         betas_new: list[float] = []
 
         fractions_cnn_newer: list[float] = []
         fractions_cluster_newer: list[float] = []
+        fractions_fk_newer: list[float] = []
         betas_newer: list[float] = []
         
         # Track all predictions for potential second plot
-        all_predictions: dict[tuple[float, float], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        all_predictions: dict[tuple[float, float], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
         worst_cnn_fraction = -1.0
         worst_cnn_beta = None
         worst_cnn_h = None
         worst_cluster_fraction = -1.0
         worst_cluster_beta = None
         worst_cluster_h = None
+        worst_fk_fraction = -1.0
+        worst_fk_beta = None
+        worst_fk_h = None
 
         for run in RUNS:
             beta = float(run[0])
@@ -372,6 +415,16 @@ def main() -> None:
             k, x0 = fit_sigmoid(test_cluster_size, y_true)
             y_pred_cluster = sigmoid(test_cluster_size, k, x0)
 
+            test_fk_size = fk_largest_cluster_sizes_up(
+                grids[test_idx],
+                beta=beta,
+                h=h,
+                seed=int(args.fk_seed),
+                indices=test_idx,
+            )
+            k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
+            y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
+
             frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
             frac_cluster = fraction_outside_band(
                 y_true=y_true,
@@ -379,15 +432,22 @@ def main() -> None:
                 percent=float(args.percent),
                 mode=str(args.mode),
             )
+            frac_fk = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_fk,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
             print(
                 f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+                f"CNN={frac_cnn:.4f} | LCS={frac_cluster:.4f} | FK={frac_fk:.4f}"
             )
 
             betas.append(beta)
             fractions_cnn.append(frac_cnn)
             fractions_cluster.append(frac_cluster)
-            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            fractions_fk.append(frac_fk)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy(), y_pred_fk.copy())
             
             # Track worst CNN and cluster fractions separately
             if frac_cnn > worst_cnn_fraction:
@@ -398,6 +458,10 @@ def main() -> None:
                 worst_cluster_fraction = frac_cluster
                 worst_cluster_beta = beta
                 worst_cluster_h = h
+            if frac_fk > worst_fk_fraction:
+                worst_fk_fraction = frac_fk
+                worst_fk_beta = beta
+                worst_fk_h = h
 
         for run in RUNS_NEW:
             beta = float(run[0])
@@ -437,6 +501,16 @@ def main() -> None:
             k, x0 = fit_sigmoid(test_cluster_size, y_true)
             y_pred_cluster = sigmoid(test_cluster_size, k, x0)
 
+            test_fk_size = fk_largest_cluster_sizes_up(
+                grids[test_idx],
+                beta=beta,
+                h=h,
+                seed=int(args.fk_seed),
+                indices=test_idx,
+            )
+            k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
+            y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
+
             frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
             frac_cluster = fraction_outside_band(
                 y_true=y_true,
@@ -444,15 +518,22 @@ def main() -> None:
                 percent=float(args.percent),
                 mode=str(args.mode),
             )
+            frac_fk = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_fk,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
             print(
                 f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+                f"CNN={frac_cnn:.4f} | LCS={frac_cluster:.4f} | FK={frac_fk:.4f}"
             )
 
             betas_new.append(beta)
             fractions_cnn_new.append(frac_cnn)
             fractions_cluster_new.append(frac_cluster)
-            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            fractions_fk_new.append(frac_fk)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy(), y_pred_fk.copy())
             
             # Track worst CNN and cluster fractions separately
             if frac_cnn > worst_cnn_fraction:
@@ -463,6 +544,10 @@ def main() -> None:
                 worst_cluster_fraction = frac_cluster
                 worst_cluster_beta = beta
                 worst_cluster_h = h
+            if frac_fk > worst_fk_fraction:
+                worst_fk_fraction = frac_fk
+                worst_fk_beta = beta
+                worst_fk_h = h
 
         for run in RUNS_NEWER:
             beta = float(run[0])
@@ -502,6 +587,16 @@ def main() -> None:
             k, x0 = fit_sigmoid(test_cluster_size, y_true)
             y_pred_cluster = sigmoid(test_cluster_size, k, x0)
 
+            test_fk_size = fk_largest_cluster_sizes_up(
+                grids[test_idx],
+                beta=beta,
+                h=h,
+                seed=int(args.fk_seed),
+                indices=test_idx,
+            )
+            k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
+            y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
+
             frac_cnn = fraction_outside_band(y_true=y_true, y_pred=y_pred, percent=float(args.percent), mode=str(args.mode))
             frac_cluster = fraction_outside_band(
                 y_true=y_true,
@@ -509,15 +604,22 @@ def main() -> None:
                 percent=float(args.percent),
                 mode=str(args.mode),
             )
+            frac_fk = fraction_outside_band(
+                y_true=y_true,
+                y_pred=y_pred_fk,
+                percent=float(args.percent),
+                mode=str(args.mode),
+            )
             print(
                 f"beta={beta:.3f}, h={h:.3f}: outside ±{args.percent}% band ({args.mode}) "
-                f"CNN={frac_cnn:.4f} | Cluster={frac_cluster:.4f}"
+                f"CNN={frac_cnn:.4f} | LCS={frac_cluster:.4f} | FK={frac_fk:.4f}"
             )
 
             betas_newer.append(beta)
             fractions_cnn_newer.append(frac_cnn)
             fractions_cluster_newer.append(frac_cluster)
-            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy())
+            fractions_fk_newer.append(frac_fk)
+            all_predictions[(beta, h)] = (y_true.copy(), y_pred.copy(), y_pred_cluster.copy(), y_pred_fk.copy())
             
             # Track worst CNN and cluster fractions separately
             if frac_cnn > worst_cnn_fraction:
@@ -528,6 +630,10 @@ def main() -> None:
                 worst_cluster_fraction = frac_cluster
                 worst_cluster_beta = beta
                 worst_cluster_h = h
+            if frac_fk > worst_fk_fraction:
+                worst_fk_fraction = frac_fk
+                worst_fk_beta = beta
+                worst_fk_h = h
         
         # Save data cache
         _save_data_cache(
@@ -536,18 +642,24 @@ def main() -> None:
                 "betas": betas,
                 "fractions_cnn": fractions_cnn,
                 "fractions_cluster": fractions_cluster,
+                "fractions_fk": fractions_fk,
                 "betas_new": betas_new,
                 "fractions_cnn_new": fractions_cnn_new,
                 "fractions_cluster_new": fractions_cluster_new,
+                "fractions_fk_new": fractions_fk_new,
                 "betas_newer": betas_newer,
                 "fractions_cnn_newer": fractions_cnn_newer,
                 "fractions_cluster_newer": fractions_cluster_newer,
+                "fractions_fk_newer": fractions_fk_newer,
                 "worst_cnn_fraction": worst_cnn_fraction,
                 "worst_cnn_beta": worst_cnn_beta,
                 "worst_cnn_h": worst_cnn_h,
                 "worst_cluster_fraction": worst_cluster_fraction,
                 "worst_cluster_beta": worst_cluster_beta,
                 "worst_cluster_h": worst_cluster_h,
+                "worst_fk_fraction": worst_fk_fraction,
+                "worst_fk_beta": worst_fk_beta,
+                "worst_fk_h": worst_fk_h,
                 "all_predictions": all_predictions,
             },
         )
@@ -561,16 +673,19 @@ def main() -> None:
     betas_sorted = np.asarray(betas, dtype=float)[order]
     cnn_sorted = np.asarray(fractions_cnn, dtype=float)[order]
     cluster_sorted = np.asarray(fractions_cluster, dtype=float)[order]
+    fk_sorted = np.asarray(fractions_fk, dtype=float)[order]
     
     order_new = np.argsort(np.asarray(betas_new, dtype=float))
     betas_sorted_new = np.asarray(betas_new, dtype=float)[order_new]
     cnn_sorted_new = np.asarray(fractions_cnn_new, dtype=float)[order_new]
     cluster_sorted_new = np.asarray(fractions_cluster_new, dtype=float)[order_new]
+    fk_sorted_new = np.asarray(fractions_fk_new, dtype=float)[order_new]
 
     order_newer = np.argsort(np.asarray(betas_newer, dtype=float))
     betas_sorted_newer = np.asarray(betas_newer, dtype=float)[order_newer]
     cnn_sorted_newer = np.asarray(fractions_cnn_newer, dtype=float)[order_newer]
     cluster_sorted_newer = np.asarray(fractions_cluster_newer, dtype=float)[order_newer]
+    fk_sorted_newer = np.asarray(fractions_fk_newer, dtype=float)[order_newer]
 
     plt.figure(figsize=(7.5, 5))
     ax = plt.gca()
@@ -580,24 +695,31 @@ def main() -> None:
     ax.scatter(betas_sorted, cluster_sorted, s=60, marker="s", color=colors["steel_blue"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted, cnn_sorted, color=colors["light_steel_blue"], linewidth=2, alpha=0.8, zorder=1)
     ax.scatter(betas_sorted, cnn_sorted, s=60, marker="o", color=colors["steel_blue"], alpha=0.9, zorder=2)
+    ax.plot(betas_sorted, fk_sorted, color=colors["light_steel_blue"], linewidth=2, alpha=0.8, zorder=1)
+    ax.scatter(betas_sorted, fk_sorted, s=70, marker="^", color=colors["steel_blue"], alpha=0.9, zorder=2)
     
     # Middle h runs (green)
     ax.plot(betas_sorted_new, cluster_sorted_new, color=colors["light_green"], linewidth=2, alpha=0.8, linestyle="--", zorder=1)
     ax.scatter(betas_sorted_new, cluster_sorted_new, s=60, marker="s", color=colors["forest_green"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted_new, cnn_sorted_new, color=colors["light_green"], linewidth=2, alpha=0.8, linestyle="--", zorder=1)
     ax.scatter(betas_sorted_new, cnn_sorted_new, s=60, marker="o", color=colors["forest_green"], alpha=0.9, zorder=2)
+    ax.plot(betas_sorted_new, fk_sorted_new, color=colors["light_green"], linewidth=2, alpha=0.8, linestyle="--", zorder=1)
+    ax.scatter(betas_sorted_new, fk_sorted_new, s=70, marker="^", color=colors["forest_green"], alpha=0.9, zorder=2)
 
     # Highest h runs (red)
     ax.plot(betas_sorted_newer, cluster_sorted_newer, color=colors["soft_red"], linewidth=2, alpha=0.8, linestyle=":", zorder=1)
     ax.scatter(betas_sorted_newer, cluster_sorted_newer, s=60, marker="s", color=colors["firebrick_red"], alpha=0.9, zorder=2)
     ax.plot(betas_sorted_newer, cnn_sorted_newer, color=colors["soft_red"], linewidth=2, alpha=0.8, linestyle=":", zorder=1)
     ax.scatter(betas_sorted_newer, cnn_sorted_newer, s=60, marker="o", color=colors["firebrick_red"], alpha=0.9, zorder=2)
+    ax.plot(betas_sorted_newer, fk_sorted_newer, color=colors["soft_red"], linewidth=2, alpha=0.8, linestyle=":", zorder=1)
+    ax.scatter(betas_sorted_newer, fk_sorted_newer, s=70, marker="^", color=colors["firebrick_red"], alpha=0.9, zorder=2)
 
     # Create legend 1: markers (Metric type)
     from matplotlib.lines import Line2D
     marker_handles = [
         Line2D([0], [0], marker="s", color="w", markerfacecolor="black", markersize=10, label="LCS"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor="black", markersize=10, label="q-NN"),
+        Line2D([0], [0], marker="^", color="w", markerfacecolor="black", markersize=10, label="FK"),
     ]
     legend1 = ax.legend(
         handles=marker_handles,
@@ -639,7 +761,13 @@ def main() -> None:
     def create_scatter_plot(y_true, y_pred, metric_label, beta, h, fraction_outside, args, out_dir, config, highlight_worst=False, highlight_best=False):
         plt.figure(figsize=(5, 5))
         ax = plt.gca()
-        metric_marker = "s" if metric_label.lower() in {"cluster", "cluster size", "lcs"} else "o"
+        metric_name = metric_label.lower()
+        if metric_name in {"cluster", "cluster size", "lcs"}:
+            metric_marker = "s"
+        elif metric_name in {"fk", "fortuin-kasteleyn"}:
+            metric_marker = "^"
+        else:
+            metric_marker = "o"
         
         # Bin target committor into 50 bins and subsample predictions uniformly
         n_bins = 50
@@ -765,7 +893,7 @@ def main() -> None:
     
     # Create scatter plot for worst CNN
     if worst_cnn_beta is not None and worst_cnn_h is not None:
-        y_true_worst_cnn, y_pred_cnn_worst, _ = all_predictions[(worst_cnn_beta, worst_cnn_h)]
+        y_true_worst_cnn, y_pred_cnn_worst, _, _ = all_predictions[(worst_cnn_beta, worst_cnn_h)]
 
         create_scatter_plot(y_true_worst_cnn, y_pred_cnn_worst, "q-NN", worst_cnn_beta, worst_cnn_h, worst_cnn_fraction, args, out_dir, config)
         worst_cnn_path = out_dir / f"committor_scatter_cnn_{worst_cnn_beta:.3f}_{worst_cnn_h:.3f}.svg"
@@ -775,13 +903,23 @@ def main() -> None:
     
     # Create scatter plot for worst cluster
     if worst_cluster_beta is not None and worst_cluster_h is not None:
-        y_true_worst_cluster, _, y_pred_cluster_worst = all_predictions[(worst_cluster_beta, worst_cluster_h)]
+        y_true_worst_cluster, _, y_pred_cluster_worst, _ = all_predictions[(worst_cluster_beta, worst_cluster_h)]
 
         create_scatter_plot(y_true_worst_cluster, y_pred_cluster_worst, "Cluster Size", worst_cluster_beta, worst_cluster_h, worst_cluster_fraction, args, out_dir, config, highlight_worst=True, highlight_best=True)
         worst_cluster_path = out_dir / f"committor_scatter_cluster_{worst_cluster_beta:.3f}_{worst_cluster_h:.3f}.svg"
         plt.savefig(worst_cluster_path, bbox_inches='tight')
         plt.close()
         print(f"Saved worst cluster scatter plot to {worst_cluster_path}")
+
+    # Create scatter plot for worst FK cluster
+    if worst_fk_beta is not None and worst_fk_h is not None:
+        y_true_worst_fk, _, _, y_pred_fk_worst = all_predictions[(worst_fk_beta, worst_fk_h)]
+
+        create_scatter_plot(y_true_worst_fk, y_pred_fk_worst, "FK", worst_fk_beta, worst_fk_h, worst_fk_fraction, args, out_dir, config, highlight_worst=True, highlight_best=True)
+        worst_fk_path = out_dir / f"committor_scatter_fk_{worst_fk_beta:.3f}_{worst_fk_h:.3f}.svg"
+        plt.savefig(worst_fk_path, bbox_inches='tight')
+        plt.close()
+        print(f"Saved worst FK scatter plot to {worst_fk_path}")
 
 
 if __name__ == "__main__":
