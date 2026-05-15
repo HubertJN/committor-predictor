@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from numba import njit
 from scipy.ndimage import label
 
 
@@ -53,7 +54,58 @@ class _UnionFind:
         self.size[ra] += self.size[rb]
 
 
-def _child_seed(seed: int, beta: float, h: float | None, index: int) -> int:
+@njit(cache=True, inline="always")
+def _uf_find(parent: np.ndarray, x: int) -> int:
+    root = x
+    while parent[root] != root:
+        root = parent[root]
+    while parent[x] != x:
+        nxt = parent[x]
+        parent[x] = root
+        x = nxt
+    return root
+
+
+@njit(cache=True, inline="always")
+def _uf_union(parent: np.ndarray, size: np.ndarray, a: int, b: int) -> None:
+    ra = _uf_find(parent, a)
+    rb = _uf_find(parent, b)
+    if ra == rb:
+        return
+    if size[ra] < size[rb]:
+        tmp = ra
+        ra = rb
+        rb = tmp
+    parent[rb] = ra
+    size[ra] += size[rb]
+
+
+@njit(cache=True)
+def _fk_largest_from_edges(
+    n_up: int,
+    edge_u: np.ndarray,
+    edge_v: np.ndarray,
+    keep: np.ndarray,
+) -> int:
+    parent = np.arange(n_up, dtype=np.int64)
+    size = np.ones(n_up, dtype=np.int64)
+
+    for i in range(edge_u.shape[0]):
+        if keep[i]:
+            _uf_union(parent, size, int(edge_u[i]), int(edge_v[i]))
+
+    # Count component sizes after full compression.
+    counts = np.zeros(n_up, dtype=np.int64)
+    max_count = 1
+    for i in range(n_up):
+        r = _uf_find(parent, i)
+        counts[r] += 1
+        if counts[r] > max_count:
+            max_count = counts[r]
+    return int(max_count)
+
+
+def _child_seed(seed: int, beta: float, h: float | None, index: int, draw_index: int = 0) -> int:
     h_part = 0 if h is None else int(round(float(h) * 1_000_000))
     seq = np.random.SeedSequence(
         [
@@ -61,6 +113,7 @@ def _child_seed(seed: int, beta: float, h: float | None, index: int) -> int:
             int(round(float(beta) * 1_000_000)),
             h_part,
             int(index),
+            int(draw_index),
         ]
     )
     return int(seq.generate_state(1, dtype=np.uint32)[0])
@@ -93,24 +146,31 @@ def fk_largest_cluster_size_up(
 
     labels = -np.ones(up.shape, dtype=np.int64)
     labels[up] = np.arange(n_up, dtype=np.int64)
-    uf = _UnionFind(n_up)
 
     vertical = up[:-1, :] & up[1:, :]
+    v_u = np.empty(0, dtype=np.int64)
+    v_v = np.empty(0, dtype=np.int64)
+    keep_v = np.empty(0, dtype=np.bool_)
     if np.any(vertical):
         a_rows, a_cols = np.nonzero(vertical)
-        keep = rng.random(a_rows.size) < p_bond
-        for r, c in zip(a_rows[keep], a_cols[keep]):
-            uf.union(int(labels[r, c]), int(labels[r + 1, c]))
+        keep_v = rng.random(a_rows.size) < p_bond
+        v_u = labels[a_rows, a_cols].astype(np.int64, copy=False)
+        v_v = labels[a_rows + 1, a_cols].astype(np.int64, copy=False)
 
     horizontal = up[:, :-1] & up[:, 1:]
+    h_u = np.empty(0, dtype=np.int64)
+    h_v = np.empty(0, dtype=np.int64)
+    keep_h = np.empty(0, dtype=np.bool_)
     if np.any(horizontal):
         a_rows, a_cols = np.nonzero(horizontal)
-        keep = rng.random(a_rows.size) < p_bond
-        for r, c in zip(a_rows[keep], a_cols[keep]):
-            uf.union(int(labels[r, c]), int(labels[r, c + 1]))
+        keep_h = rng.random(a_rows.size) < p_bond
+        h_u = labels[a_rows, a_cols].astype(np.int64, copy=False)
+        h_v = labels[a_rows, a_cols + 1].astype(np.int64, copy=False)
 
-    roots = np.fromiter((uf.find(i) for i in range(n_up)), dtype=np.int64, count=n_up)
-    return int(np.bincount(roots).max())
+    edge_u = np.concatenate((v_u, h_u))
+    edge_v = np.concatenate((v_v, h_v))
+    keep = np.concatenate((keep_v, keep_h))
+    return int(_fk_largest_from_edges(n_up, edge_u, edge_v, keep))
 
 
 def fk_largest_cluster_sizes_up(
@@ -119,8 +179,9 @@ def fk_largest_cluster_sizes_up(
     seed: int,
     h: float | None = None,
     indices: np.ndarray | None = None,
+    n_draws: int = 1,
 ) -> np.ndarray:
-    """Batch wrapper for seeded single-draw up-spin FK clusters."""
+    """Batch wrapper for seeded up-spin FK clusters averaged over draws."""
 
     frames = np.asarray(frames)
     if indices is None:
@@ -129,12 +190,18 @@ def fk_largest_cluster_sizes_up(
         indices = np.asarray(indices, dtype=np.int64)
         if indices.shape[0] != frames.shape[0]:
             raise ValueError("indices must have the same length as frames")
+    n_draws = int(n_draws)
+    if n_draws <= 0:
+        raise ValueError("n_draws must be >= 1")
 
     out = np.empty(frames.shape[0], dtype=np.float64)
     for i in range(frames.shape[0]):
-        out[i] = fk_largest_cluster_size_up(
-            frames[i],
-            beta=float(beta),
-            seed=_child_seed(int(seed), float(beta), h, int(indices[i])),
-        )
+        draw_sizes = np.empty(n_draws, dtype=np.float64)
+        for draw_idx in range(n_draws):
+            draw_sizes[draw_idx] = fk_largest_cluster_size_up(
+                frames[i],
+                beta=float(beta),
+                seed=_child_seed(int(seed), float(beta), h, int(indices[i]), draw_index=draw_idx),
+            )
+        out[i] = float(np.mean(draw_sizes))
     return out

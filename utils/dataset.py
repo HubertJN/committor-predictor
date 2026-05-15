@@ -151,6 +151,27 @@ def filter_zero_committor(grids, attrs):
     print(f"Filtered {len(grids) - len(grids_filtered)} grids with committor=0")
     return grids_filtered, attrs_filtered
 
+
+class BalancedBatchSampler:
+    """Shuffle once per epoch and split samples into nearly equal-sized batches."""
+
+    def __init__(self, dataset, batch_size):
+        self.dataset_size = len(dataset)
+        self.batch_size = int(batch_size)
+        if self.batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+        self.num_batches = max(1, int(round(self.dataset_size / self.batch_size)))
+
+    def __iter__(self):
+        indices = np.random.permutation(self.dataset_size)
+        for batch in np.array_split(indices, self.num_batches):
+            if len(batch) > 0:
+                yield batch.tolist()
+
+    def __len__(self):
+        return self.num_batches
+
+
 def data_to_dataloader(train_ds, valid_ds, test_ds, bs):
     """
     Return DataLoaders for training and validation datasets.
@@ -159,7 +180,7 @@ def data_to_dataloader(train_ds, valid_ds, test_ds, bs):
         train_ds, valid_ds: Dataset objects
         bs: batch size
     """
-    train_dl = TorchDataLoader(train_ds, batch_size=bs, shuffle=True)
+    train_dl = TorchDataLoader(train_ds, batch_sampler=BalancedBatchSampler(train_ds, bs))
     valid_dl = TorchDataLoader(valid_ds, batch_size=bs)
     test_dl = TorchDataLoader(test_ds, batch_size=bs)
 

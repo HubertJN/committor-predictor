@@ -55,6 +55,10 @@ plt.rcParams.update(
 
 mpl.rcParams["svg.fonttype"] = "none"
 
+CACHE_SCHEMA_VERSION = 3
+GROUP_NAMES = ("low_h", "mid_h", "high_h")
+METHODS = ("cnn", "lcs", "fk")
+
 
 def lighten_color(color: str, amount: float = 0.25):
     rgb = np.asarray(mcolors.to_rgb(color), dtype=float)
@@ -171,58 +175,146 @@ def fraction_outside_band(y_true: np.ndarray, y_pred: np.ndarray, percent: float
     return float(np.mean(diff > band))
 
 
+def _build_cache_payload(
+    *,
+    betas: list[float],
+    fractions_cnn: list[float],
+    fractions_cluster: list[float],
+    fractions_fk: list[float],
+    betas_new: list[float],
+    fractions_cnn_new: list[float],
+    fractions_cluster_new: list[float],
+    fractions_fk_new: list[float],
+    betas_newer: list[float],
+    fractions_cnn_newer: list[float],
+    fractions_cluster_newer: list[float],
+    fractions_fk_newer: list[float],
+    worst_cnn_fraction: float,
+    worst_cnn_beta: float | None,
+    worst_cnn_h: float | None,
+    worst_cluster_fraction: float,
+    worst_cluster_beta: float | None,
+    worst_cluster_h: float | None,
+    worst_fk_fraction: float,
+    worst_fk_beta: float | None,
+    worst_fk_h: float | None,
+    fk_draws: int,
+    fk_aggregate: str,
+    all_predictions: dict[tuple[float, float], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+) -> dict:
+    groups = [
+        {
+            "name": GROUP_NAMES[0],
+            "betas": list(betas),
+            "fractions": {
+                "cnn": list(fractions_cnn),
+                "lcs": list(fractions_cluster),
+                "fk": list(fractions_fk),
+            },
+        },
+        {
+            "name": GROUP_NAMES[1],
+            "betas": list(betas_new),
+            "fractions": {
+                "cnn": list(fractions_cnn_new),
+                "lcs": list(fractions_cluster_new),
+                "fk": list(fractions_fk_new),
+            },
+        },
+        {
+            "name": GROUP_NAMES[2],
+            "betas": list(betas_newer),
+            "fractions": {
+                "cnn": list(fractions_cnn_newer),
+                "lcs": list(fractions_cluster_newer),
+                "fk": list(fractions_fk_newer),
+            },
+        },
+    ]
+    worst_cases = {
+        "cnn": {"fraction": float(worst_cnn_fraction), "beta": None if worst_cnn_beta is None else float(worst_cnn_beta), "h": None if worst_cnn_h is None else float(worst_cnn_h)},
+        "lcs": {"fraction": float(worst_cluster_fraction), "beta": None if worst_cluster_beta is None else float(worst_cluster_beta), "h": None if worst_cluster_h is None else float(worst_cluster_h)},
+        "fk": {"fraction": float(worst_fk_fraction), "beta": None if worst_fk_beta is None else float(worst_fk_beta), "h": None if worst_fk_h is None else float(worst_fk_h)},
+    }
+    return {
+        "schema_version": CACHE_SCHEMA_VERSION,
+        "fk_draws": int(fk_draws),
+        "fk_aggregate": str(fk_aggregate),
+        "groups": groups,
+        "worst_cases": worst_cases,
+        "predictions": all_predictions,
+    }
+
+
 def _save_data_cache(cache_path: str | Path, data: dict) -> None:
     """Save collected data to NPZ cache file."""
     cache_path = Path(cache_path)
-    
-    # Prepare predictions data for NPZ storage
-    all_preds = data["all_predictions"]
-    pred_keys = []  # Store (beta, h) tuples
+
+    groups = data["groups"]
+    worst_cases = data["worst_cases"]
+    all_preds = data["predictions"]
+    fk_draws = int(data["fk_draws"])
+    fk_aggregate = str(data["fk_aggregate"])
+
+    # Prepare prediction records for NPZ storage.
+    pred_keys = []
     pred_y_true = []
-    pred_y_pred = []
-    pred_y_pred_cluster = []
+    pred_y_pred_cnn = []
+    pred_y_pred_lcs = []
     pred_y_pred_fk = []
-    
-    for (beta, h), (y_true, y_pred, y_pred_cluster, y_pred_fk) in all_preds.items():
+
+    for (beta, h), (y_true, y_pred_cnn, y_pred_lcs, y_pred_fk) in all_preds.items():
         pred_keys.append([beta, h])
         pred_y_true.append(y_true)
-        pred_y_pred.append(y_pred)
-        pred_y_pred_cluster.append(y_pred_cluster)
+        pred_y_pred_cnn.append(y_pred_cnn)
+        pred_y_pred_lcs.append(y_pred_lcs)
         pred_y_pred_fk.append(y_pred_fk)
-    
+
+    group_names = np.asarray([g["name"] for g in groups], dtype=object)
+    group_betas = np.asarray([np.asarray(g["betas"], dtype=float) for g in groups], dtype=object)
+    group_frac_cnn = np.asarray([np.asarray(g["fractions"]["cnn"], dtype=float) for g in groups], dtype=object)
+    group_frac_lcs = np.asarray([np.asarray(g["fractions"]["lcs"], dtype=float) for g in groups], dtype=object)
+    group_frac_fk = np.asarray([np.asarray(g["fractions"]["fk"], dtype=float) for g in groups], dtype=object)
+
+    worst_methods = np.asarray(METHODS, dtype=object)
+    worst_fraction = np.asarray([float(worst_cases[m]["fraction"]) for m in METHODS], dtype=float)
+    worst_beta = np.asarray(
+        [np.nan if worst_cases[m]["beta"] is None else float(worst_cases[m]["beta"]) for m in METHODS],
+        dtype=float,
+    )
+    worst_h = np.asarray(
+        [np.nan if worst_cases[m]["h"] is None else float(worst_cases[m]["h"]) for m in METHODS],
+        dtype=float,
+    )
+
     np.savez_compressed(
         str(cache_path),
-        betas=np.array(data["betas"]),
-        fractions_cnn=np.array(data["fractions_cnn"]),
-        fractions_cluster=np.array(data["fractions_cluster"]),
-        fractions_fk=np.array(data["fractions_fk"]),
-        betas_new=np.array(data["betas_new"]),
-        fractions_cnn_new=np.array(data["fractions_cnn_new"]),
-        fractions_cluster_new=np.array(data["fractions_cluster_new"]),
-        fractions_fk_new=np.array(data["fractions_fk_new"]),
-        betas_newer=np.array(data["betas_newer"]),
-        fractions_cnn_newer=np.array(data["fractions_cnn_newer"]),
-        fractions_cluster_newer=np.array(data["fractions_cluster_newer"]),
-        fractions_fk_newer=np.array(data["fractions_fk_newer"]),
-        worst_cnn_fraction=np.array([data["worst_cnn_fraction"]]),
-        worst_cnn_beta=np.array([data["worst_cnn_beta"]]),
-        worst_cnn_h=np.array([data["worst_cnn_h"]]),
-        worst_cluster_fraction=np.array([data["worst_cluster_fraction"]]),
-        worst_cluster_beta=np.array([data["worst_cluster_beta"]]),
-        worst_cluster_h=np.array([data["worst_cluster_h"]]),
-        worst_fk_fraction=np.array([data["worst_fk_fraction"]]),
-        worst_fk_beta=np.array([data["worst_fk_beta"]]),
-        worst_fk_h=np.array([data["worst_fk_h"]]),
+        cache_schema_version=np.asarray([CACHE_SCHEMA_VERSION], dtype=np.int64),
+        fk_draws=np.asarray([fk_draws], dtype=np.int64),
+        fk_aggregate=np.asarray([fk_aggregate], dtype=object),
+        group_names=group_names,
+        group_betas=group_betas,
+        group_frac_cnn=group_frac_cnn,
+        group_frac_lcs=group_frac_lcs,
+        group_frac_fk=group_frac_fk,
+        worst_methods=worst_methods,
+        worst_fraction=worst_fraction,
+        worst_beta=worst_beta,
+        worst_h=worst_h,
         pred_keys=np.array(pred_keys),
         pred_y_true=np.array(pred_y_true, dtype=object),
-        pred_y_pred=np.array(pred_y_pred, dtype=object),
-        pred_y_pred_cluster=np.array(pred_y_pred_cluster, dtype=object),
+        pred_y_pred_cnn=np.array(pred_y_pred_cnn, dtype=object),
+        pred_y_pred_lcs=np.array(pred_y_pred_lcs, dtype=object),
         pred_y_pred_fk=np.array(pred_y_pred_fk, dtype=object),
     )
     print(f"Saved data cache to {cache_path}")
 
 
-def _load_data_cache(cache_path: str | Path) -> dict | None:
+def _load_data_cache(
+    cache_path: str | Path,
+    expected_fk_draws: int,
+    expected_fk_aggregate: str = "mean",
+) -> dict | None:
     """Load collected data from NPZ cache file. Returns None if cache doesn't exist."""
     cache_path = Path(cache_path)
     if not cache_path.exists():
@@ -231,53 +323,94 @@ def _load_data_cache(cache_path: str | Path) -> dict | None:
     try:
         cached = np.load(str(cache_path), allow_pickle=True)
         required_keys = {
-            "fractions_fk",
-            "fractions_fk_new",
-            "fractions_fk_newer",
-            "worst_fk_fraction",
-            "worst_fk_beta",
-            "worst_fk_h",
+            "cache_schema_version",
+            "fk_draws",
+            "fk_aggregate",
+            "group_names",
+            "group_betas",
+            "group_frac_cnn",
+            "group_frac_lcs",
+            "group_frac_fk",
+            "worst_methods",
+            "worst_fraction",
+            "worst_beta",
+            "worst_h",
+            "pred_y_pred_cnn",
+            "pred_y_pred_lcs",
             "pred_y_pred_fk",
         }
         missing = sorted(required_keys.difference(cached.files))
         if missing:
-            print(f"Cache is missing FK fields ({', '.join(missing)}); regenerating.")
+            print(f"Cache schema mismatch; missing keys ({', '.join(missing)}). Regenerating.")
             return None
-        
-        # Reconstruct predictions dict from NPZ data
+
+        schema_version = int(np.asarray(cached["cache_schema_version"], dtype=np.int64).ravel()[0])
+        if schema_version != CACHE_SCHEMA_VERSION:
+            print(f"Cache schema version {schema_version} != expected {CACHE_SCHEMA_VERSION}; regenerating.")
+            return None
+        fk_draws = int(np.asarray(cached["fk_draws"], dtype=np.int64).ravel()[0])
+        fk_aggregate = str(np.asarray(cached["fk_aggregate"], dtype=object).ravel()[0])
+        if fk_draws != int(expected_fk_draws):
+            print(
+                f"Cache FK draws {fk_draws} != expected {int(expected_fk_draws)}; regenerating."
+            )
+            return None
+        if fk_aggregate != str(expected_fk_aggregate):
+            print(
+                f"Cache FK aggregate {fk_aggregate!r} != expected {str(expected_fk_aggregate)!r}; regenerating."
+            )
+            return None
+
+        # Reconstruct predictions dict from NPZ data.
         all_predictions = {}
         for i, (beta, h) in enumerate(cached["pred_keys"]):
             key = (float(beta), float(h))
             all_predictions[key] = (
                 cached["pred_y_true"][i].astype(np.float64),
-                cached["pred_y_pred"][i].astype(np.float64),
-                cached["pred_y_pred_cluster"][i].astype(np.float64),
+                cached["pred_y_pred_cnn"][i].astype(np.float64),
+                cached["pred_y_pred_lcs"][i].astype(np.float64),
                 cached["pred_y_pred_fk"][i].astype(np.float64),
             )
-        
+
+        group_names = [str(x) for x in np.asarray(cached["group_names"], dtype=object).tolist()]
+        group_betas = np.asarray(cached["group_betas"], dtype=object)
+        group_frac_cnn = np.asarray(cached["group_frac_cnn"], dtype=object)
+        group_frac_lcs = np.asarray(cached["group_frac_lcs"], dtype=object)
+        group_frac_fk = np.asarray(cached["group_frac_fk"], dtype=object)
+
+        groups = []
+        for i, name in enumerate(group_names):
+            groups.append(
+                {
+                    "name": name,
+                    "betas": np.asarray(group_betas[i], dtype=float).tolist(),
+                    "fractions": {
+                        "cnn": np.asarray(group_frac_cnn[i], dtype=float).tolist(),
+                        "lcs": np.asarray(group_frac_lcs[i], dtype=float).tolist(),
+                        "fk": np.asarray(group_frac_fk[i], dtype=float).tolist(),
+                    },
+                }
+            )
+
+        worst_methods = [str(x) for x in np.asarray(cached["worst_methods"], dtype=object).tolist()]
+        worst_fraction = np.asarray(cached["worst_fraction"], dtype=float)
+        worst_beta = np.asarray(cached["worst_beta"], dtype=float)
+        worst_h = np.asarray(cached["worst_h"], dtype=float)
+        worst_cases = {}
+        for i, method in enumerate(worst_methods):
+            worst_cases[method] = {
+                "fraction": float(worst_fraction[i]),
+                "beta": None if np.isnan(worst_beta[i]) else float(worst_beta[i]),
+                "h": None if np.isnan(worst_h[i]) else float(worst_h[i]),
+            }
+
         data = {
-            "betas": cached["betas"].tolist(),
-            "fractions_cnn": cached["fractions_cnn"].tolist(),
-            "fractions_cluster": cached["fractions_cluster"].tolist(),
-            "fractions_fk": cached["fractions_fk"].tolist(),
-            "betas_new": cached["betas_new"].tolist(),
-            "fractions_cnn_new": cached["fractions_cnn_new"].tolist(),
-            "fractions_cluster_new": cached["fractions_cluster_new"].tolist(),
-            "fractions_fk_new": cached["fractions_fk_new"].tolist(),
-            "betas_newer": cached["betas_newer"].tolist(),
-            "fractions_cnn_newer": cached["fractions_cnn_newer"].tolist(),
-            "fractions_cluster_newer": cached["fractions_cluster_newer"].tolist(),
-            "fractions_fk_newer": cached["fractions_fk_newer"].tolist(),
-            "worst_cnn_fraction": float(cached["worst_cnn_fraction"][0]),
-            "worst_cnn_beta": float(cached["worst_cnn_beta"][0]),
-            "worst_cnn_h": float(cached["worst_cnn_h"][0]),
-            "worst_cluster_fraction": float(cached["worst_cluster_fraction"][0]),
-            "worst_cluster_beta": float(cached["worst_cluster_beta"][0]),
-            "worst_cluster_h": float(cached["worst_cluster_h"][0]),
-            "worst_fk_fraction": float(cached["worst_fk_fraction"][0]),
-            "worst_fk_beta": float(cached["worst_fk_beta"][0]),
-            "worst_fk_h": float(cached["worst_fk_h"][0]),
-            "all_predictions": all_predictions,
+            "schema_version": schema_version,
+            "fk_draws": fk_draws,
+            "fk_aggregate": fk_aggregate,
+            "groups": groups,
+            "worst_cases": worst_cases,
+            "predictions": all_predictions,
         }
         print(f"Loaded data cache from {cache_path}")
         return data
@@ -301,7 +434,8 @@ def main() -> None:
     parser.add_argument("--out", type=str, default="diff_metric_vs_beta.svg", help="Output filename")
     parser.add_argument("--csv", type=str, default="h_beta_dn_up.csv", help="Path to CSV file with h,beta,dn,up columns")
     parser.add_argument("--data-cache", type=str, default="diff_metric_data.npz", help="Path to data cache file")
-    parser.add_argument("--fk-seed", type=int, default=12345, help="Base RNG seed for single-draw FK clusters")
+    parser.add_argument("--fk-seed", type=int, default=12345, help="Base RNG seed for FK clusters")
+    parser.add_argument("--fk-draws", type=int, default=32, help="Number of FK bond realizations per frame")
     parser.add_argument("--regenerate", action="store_true", default=False, help="Regenerate data cache instead of loading from disk")
     args = parser.parse_args()
 
@@ -318,34 +452,42 @@ def main() -> None:
     cache_path = Path(config.paths.plot_dir) / args.data_cache
     
     if use_cache:
-        cached_data = _load_data_cache(cache_path)
+        cached_data = _load_data_cache(cache_path, expected_fk_draws=int(args.fk_draws), expected_fk_aggregate="mean")
     else:
         cached_data = None
     
     if cached_data is not None:
-        # Use cached data
-        fractions_cnn = cached_data["fractions_cnn"]
-        fractions_cluster = cached_data["fractions_cluster"]
-        fractions_fk = cached_data["fractions_fk"]
-        betas = cached_data["betas"]
-        fractions_cnn_new = cached_data["fractions_cnn_new"]
-        fractions_cluster_new = cached_data["fractions_cluster_new"]
-        fractions_fk_new = cached_data["fractions_fk_new"]
-        betas_new = cached_data["betas_new"]
-        fractions_cnn_newer = cached_data["fractions_cnn_newer"]
-        fractions_cluster_newer = cached_data["fractions_cluster_newer"]
-        fractions_fk_newer = cached_data["fractions_fk_newer"]
-        betas_newer = cached_data["betas_newer"]
-        all_predictions = cached_data["all_predictions"]
-        worst_cnn_fraction = cached_data["worst_cnn_fraction"]
-        worst_cnn_beta = cached_data["worst_cnn_beta"]
-        worst_cnn_h = cached_data["worst_cnn_h"]
-        worst_cluster_fraction = cached_data["worst_cluster_fraction"]
-        worst_cluster_beta = cached_data["worst_cluster_beta"]
-        worst_cluster_h = cached_data["worst_cluster_h"]
-        worst_fk_fraction = cached_data["worst_fk_fraction"]
-        worst_fk_beta = cached_data["worst_fk_beta"]
-        worst_fk_h = cached_data["worst_fk_h"]
+        # Use cached data from structured schema.
+        groups_by_name = {group["name"]: group for group in cached_data["groups"]}
+        low_group = groups_by_name[GROUP_NAMES[0]]
+        mid_group = groups_by_name[GROUP_NAMES[1]]
+        high_group = groups_by_name[GROUP_NAMES[2]]
+
+        betas = low_group["betas"]
+        fractions_cnn = low_group["fractions"]["cnn"]
+        fractions_cluster = low_group["fractions"]["lcs"]
+        fractions_fk = low_group["fractions"]["fk"]
+
+        betas_new = mid_group["betas"]
+        fractions_cnn_new = mid_group["fractions"]["cnn"]
+        fractions_cluster_new = mid_group["fractions"]["lcs"]
+        fractions_fk_new = mid_group["fractions"]["fk"]
+
+        betas_newer = high_group["betas"]
+        fractions_cnn_newer = high_group["fractions"]["cnn"]
+        fractions_cluster_newer = high_group["fractions"]["lcs"]
+        fractions_fk_newer = high_group["fractions"]["fk"]
+
+        all_predictions = cached_data["predictions"]
+        worst_cnn_fraction = cached_data["worst_cases"]["cnn"]["fraction"]
+        worst_cnn_beta = cached_data["worst_cases"]["cnn"]["beta"]
+        worst_cnn_h = cached_data["worst_cases"]["cnn"]["h"]
+        worst_cluster_fraction = cached_data["worst_cases"]["lcs"]["fraction"]
+        worst_cluster_beta = cached_data["worst_cases"]["lcs"]["beta"]
+        worst_cluster_h = cached_data["worst_cases"]["lcs"]["h"]
+        worst_fk_fraction = cached_data["worst_cases"]["fk"]["fraction"]
+        worst_fk_beta = cached_data["worst_cases"]["fk"]["beta"]
+        worst_fk_h = cached_data["worst_cases"]["fk"]["h"]
     else:
         # Collect data from scratch
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -421,6 +563,7 @@ def main() -> None:
                 h=h,
                 seed=int(args.fk_seed),
                 indices=test_idx,
+                n_draws=int(args.fk_draws),
             )
             k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
             y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
@@ -507,6 +650,7 @@ def main() -> None:
                 h=h,
                 seed=int(args.fk_seed),
                 indices=test_idx,
+                n_draws=int(args.fk_draws),
             )
             k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
             y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
@@ -593,6 +737,7 @@ def main() -> None:
                 h=h,
                 seed=int(args.fk_seed),
                 indices=test_idx,
+                n_draws=int(args.fk_draws),
             )
             k_fk, x0_fk = fit_sigmoid(test_fk_size, y_true)
             y_pred_fk = sigmoid(test_fk_size, k_fk, x0_fk)
@@ -636,33 +781,33 @@ def main() -> None:
                 worst_fk_h = h
         
         # Save data cache
-        _save_data_cache(
-            cache_path,
-            {
-                "betas": betas,
-                "fractions_cnn": fractions_cnn,
-                "fractions_cluster": fractions_cluster,
-                "fractions_fk": fractions_fk,
-                "betas_new": betas_new,
-                "fractions_cnn_new": fractions_cnn_new,
-                "fractions_cluster_new": fractions_cluster_new,
-                "fractions_fk_new": fractions_fk_new,
-                "betas_newer": betas_newer,
-                "fractions_cnn_newer": fractions_cnn_newer,
-                "fractions_cluster_newer": fractions_cluster_newer,
-                "fractions_fk_newer": fractions_fk_newer,
-                "worst_cnn_fraction": worst_cnn_fraction,
-                "worst_cnn_beta": worst_cnn_beta,
-                "worst_cnn_h": worst_cnn_h,
-                "worst_cluster_fraction": worst_cluster_fraction,
-                "worst_cluster_beta": worst_cluster_beta,
-                "worst_cluster_h": worst_cluster_h,
-                "worst_fk_fraction": worst_fk_fraction,
-                "worst_fk_beta": worst_fk_beta,
-                "worst_fk_h": worst_fk_h,
-                "all_predictions": all_predictions,
-            },
+        cache_payload = _build_cache_payload(
+            betas=betas,
+            fractions_cnn=fractions_cnn,
+            fractions_cluster=fractions_cluster,
+            fractions_fk=fractions_fk,
+            betas_new=betas_new,
+            fractions_cnn_new=fractions_cnn_new,
+            fractions_cluster_new=fractions_cluster_new,
+            fractions_fk_new=fractions_fk_new,
+            betas_newer=betas_newer,
+            fractions_cnn_newer=fractions_cnn_newer,
+            fractions_cluster_newer=fractions_cluster_newer,
+            fractions_fk_newer=fractions_fk_newer,
+            worst_cnn_fraction=worst_cnn_fraction,
+            worst_cnn_beta=worst_cnn_beta,
+            worst_cnn_h=worst_cnn_h,
+            worst_cluster_fraction=worst_cluster_fraction,
+            worst_cluster_beta=worst_cluster_beta,
+            worst_cluster_h=worst_cluster_h,
+            worst_fk_fraction=worst_fk_fraction,
+            worst_fk_beta=worst_fk_beta,
+            worst_fk_h=worst_fk_h,
+            fk_draws=int(args.fk_draws),
+            fk_aggregate="mean",
+            all_predictions=all_predictions,
         )
+        _save_data_cache(cache_path, cache_payload)
     
     out_dir = Path(config.paths.plot_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -687,7 +832,7 @@ def main() -> None:
     cluster_sorted_newer = np.asarray(fractions_cluster_newer, dtype=float)[order_newer]
     fk_sorted_newer = np.asarray(fractions_fk_newer, dtype=float)[order_newer]
 
-    plt.figure(figsize=(7.5, 5))
+    plt.figure(figsize=(10, 5))
     ax = plt.gca()
     
     # Lowest h runs (blue)
@@ -724,7 +869,7 @@ def main() -> None:
     legend1 = ax.legend(
         handles=marker_handles,
         loc="upper center",
-        bbox_to_anchor=(0.22, -0.18),
+        bbox_to_anchor=(0.2, -0.18),
         ncol=len(marker_handles),
         frameon=True,
     )
@@ -739,7 +884,7 @@ def main() -> None:
     legend2 = ax.legend(
         handles=color_handles,
         loc="upper center",
-        bbox_to_anchor=(0.72, -0.18),
+        bbox_to_anchor=(0.78, -0.18),
         ncol=len(color_handles),
         frameon=True,
     )

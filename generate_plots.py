@@ -34,6 +34,7 @@ from scipy.optimize import curve_fit
 from scipy.ndimage import label
 import matplotlib.gridspec as gridspec
 from utils.architecture import CNN
+from utils.clusters import fk_largest_cluster_sizes_up
 from utils.dataset import prepare_subset, prepare_datasets
 from utils.config import load_config
 
@@ -60,6 +61,8 @@ config = load_config("config.yaml")
 parser = argparse.ArgumentParser()
 parser.add_argument("--beta", type=float, help="Override beta value")
 parser.add_argument("--h", type=float, help="Override h value")
+parser.add_argument("--fk-seed", type=int, default=12345, help="Base RNG seed for FK clusters")
+parser.add_argument("--fk-draws", type=int, default=32, help="Number of FK bond realizations per frame")
 args = parser.parse_args()
 
 # --- apply overrides ---
@@ -123,18 +126,53 @@ def sigmoid_inv(y, k, x0):
     base = np.clip(base, eps, 1.0 - eps)
     return x0 + (1.0 / k) * np.log(base / (1.0 - base))
 
-try:
-    with np.errstate(divide='ignore', invalid='ignore'):
-        popt, _ = curve_fit(
-            sigmoid,
-            test_cluster_size,
-            test_committor,
-            p0=[0.1, np.median(test_cluster_size)],
-            maxfev=10000,
-        )
-except RuntimeError as e:
-    print(f"Sigmoid fit failed: {e}, using default parameters")
-    popt = [0.1, np.median(test_cluster_size)]
+
+def fit_sigmoid(x, y):
+    try:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            popt, _ = curve_fit(
+                sigmoid,
+                x,
+                y,
+                p0=[0.1, np.median(x)],
+                maxfev=10000,
+            )
+    except RuntimeError as e:
+        print(f"Sigmoid fit failed: {e}, using default parameters")
+        popt = [0.1, np.median(x)]
+    return popt
+
+
+def logistic_2f(X, w0, w1, w2):
+    lcs = X[0]
+    fk = X[1]
+    z = w0 + w1 * lcs + w2 * fk
+    base = 1.0 / (1.0 + np.exp(-z))
+    base0 = 1.0 / (1.0 + np.exp(-w0))
+    # Anchor at origin: prediction is exactly 0 when lcs=fk=0.
+    return (base - base0) / (1.0 - base0 + 1e-10)
+
+
+def fit_logistic_lcs_fk(lcs_size, fk_size, y):
+    xdata = np.vstack([np.asarray(lcs_size, dtype=float), np.asarray(fk_size, dtype=float)])
+    ydata = np.asarray(y, dtype=float)
+    try:
+        with np.errstate(over='ignore', divide='ignore', invalid='ignore'):
+            popt, _ = curve_fit(
+                logistic_2f,
+                xdata,
+                ydata,
+                p0=[0.0, 0.01, 0.01],
+                maxfev=20000,
+            )
+    except RuntimeError as e:
+        print(f"LCS+FK logistic fit failed: {e}, using default parameters")
+        popt = np.array([0.0, 0.01, 0.01], dtype=float)
+    preds = logistic_2f(xdata, *popt)
+    return popt, np.asarray(preds, dtype=float)
+
+
+popt = fit_sigmoid(test_cluster_size, test_committor)
 x_fit = np.linspace(test_cluster_size.min(), test_cluster_size.max(), 200)
 y_fit = sigmoid(x_fit, *popt)
 
@@ -185,6 +223,52 @@ k_hat, x0_hat = popt
 # x corresponding to committor y = 0.5
 x_at_half = int(sigmoid_inv(0.5, k_hat, x0_hat))
 print(f"Critical cluster size at committor = 0.5: {x_at_half}")
+
+# =======================
+# --- FK Sigmoid Fit ---
+# =======================
+test_fk_size = fk_largest_cluster_sizes_up(
+    grids[test_idx],
+    beta=float(beta),
+    seed=int(args.fk_seed),
+    h=float(h),
+    indices=test_idx,
+    n_draws=int(args.fk_draws),
+)
+popt_fk = fit_sigmoid(test_fk_size, test_committor)
+x_fit_fk = np.linspace(test_fk_size.min(), test_fk_size.max(), 200)
+y_fit_fk = sigmoid(x_fit_fk, *popt_fk)
+
+plt.figure(figsize=(6, 6))
+plt.errorbar(
+    test_fk_size,
+    test_committor,
+    yerr=test_error,
+    fmt='o',
+    ms=3,
+    alpha=0.5,
+    label="Test Data",
+    ecolor='gray',
+    capsize=2,
+)
+plt.plot(x_fit_fk, y_fit_fk, color=colors['firebrick_red'], linewidth=2, label="Sigmoid Fit", zorder=10)
+plt.xlabel("FK Largest Cluster Size")
+plt.ylabel("Target Committor")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
+plt.tight_layout()
+
+committor_one_mask_fk = np.isclose(test_committor, 1.0, atol=1e-6) | (test_committor >= 1.0 - 1e-6)
+if np.any(committor_one_mask_fk):
+    smallest_fk_at_one = float(np.min(test_fk_size[committor_one_mask_fk]))
+    x_upper_fk = smallest_fk_at_one * 1.25
+else:
+    smallest_fk_at_one = None
+    x_upper_fk = float(np.max(test_fk_size))
+
+plt.xlim(-25, x_upper_fk)
+plt.savefig(plot_dir / "sigmoid_fk.svg")
+plt.close()
+print(f"Saved FK size vs committor plot with error bars to {plot_dir}/sigmoid_fk.svg")
 
 #exit()
 
@@ -435,6 +519,102 @@ plt.tight_layout()
 plt.savefig(plot_dir / "cluster_bounded_95ci.svg")
 plt.close()
 print(f"Saved cluster bounded 95% interval plot to {plot_dir}/cluster_bounded_95ci.svg")
+
+# =======================
+# --- FK Predictions ---
+# =======================
+fk_predictions = sigmoid(test_fk_size, *popt_fk)
+fk_rmse = np.sqrt(np.mean((fk_predictions - y_test) ** 2))
+
+fk_interval_model = build_binned_interval_model(
+    y_test, fk_predictions, n_bins=25, use_quantile_bins=True
+)
+fk_q95_each, _ = lookup_binned_q95(fk_predictions, fk_interval_model)
+
+plt.figure(figsize=(6, 6))
+plt.errorbar(
+    y_test,
+    fk_predictions,
+    xerr=y_test_err,
+    ms=2,
+    capsize=2,
+    alpha=0.5,
+    fmt='o',
+    ecolor='gray',
+    color=colors["lavender"],
+)
+plt.plot([0, 1], [0, 1], color=colors['firebrick_red'], linewidth=2)
+plt.xlabel("Target Committor")
+plt.ylabel("Predicted Committor")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
+plt.text(
+    0.05, 0.95, f"RMSE = {fk_rmse:.4f}",
+    transform=plt.gca().transAxes,
+    verticalalignment='top',
+    horizontalalignment='left',
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
+)
+plt.tight_layout()
+plt.savefig(plot_dir / "predicted_fk.svg")
+plt.close()
+print(f"Saved FK prediction plot to {plot_dir}/predicted_fk.svg")
+
+x_fk, y_fk, lower_fk, upper_fk = make_bounded_curve_from_bins(
+    y_test, fk_predictions, fk_interval_model
+)
+
+plt.figure(figsize=(6, 6))
+plt.fill_between(
+    x_fk, lower_fk, upper_fk,
+    alpha=0.25, color=colors["lavender"], label="95% interval"
+)
+plt.plot(x_fk, y_fk, linewidth=2, color=colors["lavender"], label="Mean prediction")
+plt.scatter(x_fk, y_fk, s=20, color=colors["lavender"], zorder=3)
+plt.plot([0, 1], [0, 1], linestyle="--", linewidth=1.5, color=colors["firebrick_red"], label="Ideal")
+plt.xlabel("Mean Target Committor")
+plt.ylabel("Mean Predicted Committor")
+plt.title(f"FK 95% interval, β = {beta:.3f}, h = {h:.3f}")
+plt.xlim(0, 1)
+plt.ylim(0, 1)
+plt.legend()
+plt.tight_layout()
+plt.savefig(plot_dir / "fk_bounded_95ci.svg")
+plt.close()
+print(f"Saved FK bounded 95% interval plot to {plot_dir}/fk_bounded_95ci.svg")
+
+# =======================
+# --- LCS+FK Logistic Predictions ---
+# =======================
+_, lcs_fk_logistic_predictions = fit_logistic_lcs_fk(test_cluster_size, test_fk_size, y_test)
+lcs_fk_logistic_rmse = np.sqrt(np.mean((lcs_fk_logistic_predictions - y_test) ** 2))
+
+plt.figure(figsize=(6, 6))
+plt.errorbar(
+    y_test,
+    lcs_fk_logistic_predictions,
+    xerr=y_test_err,
+    ms=2,
+    capsize=2,
+    alpha=0.5,
+    fmt='o',
+    ecolor='gray',
+    color=colors["turquoise"],
+)
+plt.plot([0, 1], [0, 1], color=colors['firebrick_red'], linewidth=2)
+plt.xlabel("Target Committor")
+plt.ylabel("Predicted Committor")
+plt.title(f"β = {beta:.3f}, h = {h:.3f}")
+plt.text(
+    0.05, 0.95, f"RMSE = {lcs_fk_logistic_rmse:.4f}",
+    transform=plt.gca().transAxes,
+    verticalalignment='top',
+    horizontalalignment='left',
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.7)
+)
+plt.tight_layout()
+plt.savefig(plot_dir / "predicted_lcs_fk_logistic.svg")
+plt.close()
+print(f"Saved LCS+FK logistic prediction plot to {plot_dir}/predicted_lcs_fk_logistic.svg")
 
 # =======================
 # --- Saliency Plot: Best & Worst Predictions ---
