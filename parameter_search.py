@@ -79,11 +79,15 @@ optimizer = torch.optim.AdamW([
 # --- Training ---
 print(f"Starting training for CNN (ch={channels}, nc={num_cnn_layers}, nf={num_fc_layers})...")
 start_time = time.time()  # start timer
-fit(config.training.epochs, model, loss_func, optimizer,
+best_model_state = fit(config.training.epochs, model, loss_func, optimizer,
     train_dl, valid_dl, device)
 elapsed_time = time.time() - start_time  # elapsed seconds
 print(f"Training complete in {elapsed_time:.2f} seconds.")
 
+if best_model_state is None:
+    raise RuntimeError("Training did not produce a best validation checkpoint.")
+
+model.load_state_dict(best_model_state["model_state_dict"])
 model.eval()
 
 # --- Predictions on validation set ---
@@ -144,9 +148,11 @@ os.makedirs(config.paths.save_dir, exist_ok=True)
 fname = f"{config.model.type}_ch{channels}_cn{num_cnn_layers}_fc{num_fc_layers}.pth"
 save_path = os.path.join(config.paths.save_dir, fname)
 torch.save({
-    'model_state_dict': model.state_dict(),
+    'model_state_dict': best_model_state["model_state_dict"],
     'channels': channels,
     'num_cnn_layers': num_cnn_layers,
     'num_fc_layers': num_fc_layers,
+    'epoch': best_model_state["epoch"],
+    'val_loss': best_model_state["val_loss"],
 }, save_path)
 print(f"Model weights saved to {save_path}")

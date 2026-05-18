@@ -62,7 +62,7 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_model_state = {
-                'model_state_dict': model.state_dict().copy(),
+                'model_state_dict': {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
                 'channels': config.model.channels if config else None,
                 'num_cnn_layers': config.model.num_cnn_layers if config else None,
                 'num_fc_layers': config.model.num_fc_layers if config else None,
@@ -119,6 +119,8 @@ def fit(epochs, model, loss_func, opt, train_dl, valid_dl, device="cpu", config=
             val_loss=np.array(val_loss_history)
         )
         print(f"Loss history saved to {loss_path}")
+
+    return best_model_state
 
 class ResidualCNNLayer(nn.Module):
     def __init__(self, channels: int):
